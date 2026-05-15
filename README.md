@@ -7,6 +7,21 @@
 ---
 
 <div align="center">
+  <h2> 📂 ~ 𝓢𝓽𝓻𝓾𝓬𝓽𝓾𝓻𝓮 ~ 📂 </h2>
+</div>
+
+- 📁 **`api/`**: Nơi định nghĩa các luồng dữ liệu (Routing).
+  - `v1/`: Chứa các bộ định tuyến cho Auth, Courses, Tests và Vocabulary.
+- 📁 **`db/`**: Quản lý cơ sở dữ liệu.
+  - `schema.ts`: Định nghĩa cấu trúc bảng (PostgreSQL) bằng Drizzle.
+  - `index.ts`: Cấu hình kết nối Database.
+- 📁 **`services/`**: Bộ não xử lý nghiệp vụ.
+  - `ai.service.ts`: Tích hợp AI để chấm điểm và đưa ra feedback.
+  - `course.service.ts`: Xử lý logic liên quan đến khóa học và bài học.
+
+---
+
+<div align="center">
   <h2> ⚡ ~ 𝓒𝓸𝓻𝓮 𝓛𝓸𝓰𝓲𝓬 ~ ⚡ </h2>
   <p align="left">🔹 <b>High Performance:</b> Chạy trên Cloudflare Workers toàn cầu.</p>
   <p align="left">🔹 <b>AI Grading:</b> Hệ thống chấm điểm tự động thông minh.</p>
@@ -18,14 +33,12 @@
   <img src="https://img.shields.io/badge/Hono-FF6052?style=for-the-badge&logo=hono&logoColor=white"/>
   <img src="https://img.shields.io/badge/Cloudflare-F38020?style=for-the-badge&logo=cloudflare&logoColor=white"/>
   <img src="https://img.shields.io/badge/Drizzle-C5F74F?style=for-the-badge&logo=drizzle&logoColor=black"/>
-  <img src="https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white"/>
 </div>
 
 <div align="center">
   <h2>🚀 ~ 𝓓𝓮𝓿𝓮𝓵𝓸𝓹𝓶𝓮𝓷𝓽 ~ 🚀</h2>
   <code>npm install</code><br>
-  <code>npm run dev</code><br>
-  <code>npm run deploy</code>
+  <code>npm run dev</code>
 </div>
 
 ---
