@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "backend-cloudflare",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-14",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "JWT_SECRET": "your-very-secret-key-change-this-in-production"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID",
+      "preview_id": "REPLACE_WITH_YOUR_KV_PREVIEW_ID"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MY_BUCKET",
+      "bucket_name": "ielts-assets"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ielts_db",
+      "database_id": "YOUR_D1_DATABASE_ID",
+      "migrations_dir": "drizzle"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

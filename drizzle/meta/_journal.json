@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1778728424005,
+      "tag": "0000_friendly_colonel_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1778748464986,
+      "tag": "0001_fair_spot",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1778750115302,
+      "tag": "0002_puzzling_living_mummy",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1778760868746,
+      "tag": "0003_fresh_kang",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1778762771733,
+      "tag": "0004_slim_mathemanic",
+      "breakpoints": true
+    }
+  ]
+}
