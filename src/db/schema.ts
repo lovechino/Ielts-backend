@@ -14,6 +14,7 @@ export const users = sqliteTable('users', {
   target_band: real('target_band'),
   avatar_url: text('avatar_url'),
   is_active: integer('is_active', { mode: 'boolean' }).default(true),
+  ai_persona: text('ai_persona').default('professional'), // professional, humorous, strict, encouraging
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
   updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
 });
@@ -120,4 +121,16 @@ export const vocabulary = sqliteTable('vocabulary', {
   synonyms: text('synonyms', { mode: 'json' }),
   antonyms: text('antonyms', { mode: 'json' }),
   level: text('level'),
+});
+
+export const courseEnrollments = sqliteTable('course_enrollments', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  course_id: text('course_id').notNull().references(() => courses.id, { onDelete: 'cascade' }),
+  status: text('status').default('enrolled'), // enrolled, completed, dropped
+  enrolled_at: timestamp('enrolled_at').default(sql`CURRENT_TIMESTAMP`),
+}, (table) => {
+  return {
+    userCourseUc: unique('_user_course_uc').on(table.user_id, table.course_id)
+  }
 });

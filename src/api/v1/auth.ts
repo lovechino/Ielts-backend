@@ -2,11 +2,11 @@ import { Hono } from 'hono';
 import { jwt, sign } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq } from 'drizzle-orm';
-import { users } from '../../db/schema';
+import { users, courseEnrollments, courses } from '../../db/schema';
 import bcrypt from 'bcryptjs';
 import { Bindings } from '../../index';
 
-const auth = new Hono<{ Bindings: Bindings & { JWT_SECRET: string } }>();
+const auth = new Hono<{ Bindings: Bindings }>();
 
 // Password Hashing helpers
 const hashPassword = async (password: string) => {
@@ -103,6 +103,18 @@ auth.get('/me', async (c, next) => {
     return c.json({ success: false, error: 'User not found' }, 404);
   }
 
+  // Fetch enrolled courses
+  const enrolledCourses = await db.select({
+    id: courses.id,
+    title: courses.title,
+    thumbnail_url: courses.thumbnail_url,
+    enrolled_at: courseEnrollments.enrolled_at,
+    status: courseEnrollments.status,
+  }).from(courseEnrollments)
+    .innerJoin(courses, eq(courseEnrollments.course_id, courses.id))
+    .where(eq(courseEnrollments.user_id, payload.sub))
+    .all();
+
   return c.json({
     success: true,
     data: {
@@ -111,9 +123,64 @@ auth.get('/me', async (c, next) => {
       full_name: user.full_name,
       role: user.role,
       target_band: user.target_band,
-      avatar_url: user.avatar_url
+      avatar_url: user.avatar_url,
+      ai_persona: user.ai_persona,
+      enrolled_courses: enrolledCourses
     }
   });
+});
+
+// PATCH /me (Protected)
+auth.patch('/me', async (c, next) => {
+  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const jwtMiddleware = jwt({ secret, alg: 'HS256' });
+  return jwtMiddleware(c, next);
+}, async (c) => {
+  const payload = c.get('jwtPayload') as any;
+  const db = drizzle(c.env.DB);
+  
+  const body = await c.req.json();
+  const allowedUpdates = ['full_name', 'target_band', 'avatar_url', 'ai_persona'];
+  const updateData: Record<string, any> = {};
+
+  for (const key of allowedUpdates) {
+    if (body[key] !== undefined) {
+      updateData[key] = body[key];
+    }
+  }
+
+  if (Object.keys(updateData).length === 0) {
+    return c.json({ success: false, error: 'No valid fields to update' }, 400);
+  }
+
+  updateData.updated_at = new Date();
+
+  try {
+    const updatedUser = await db.update(users)
+      .set(updateData)
+      .where(eq(users.id, payload.sub))
+      .returning()
+      .get();
+
+    if (!updatedUser) {
+      return c.json({ success: false, error: 'User not found' }, 404);
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        full_name: updatedUser.full_name,
+        role: updatedUser.role,
+        target_band: updatedUser.target_band,
+        avatar_url: updatedUser.avatar_url,
+        ai_persona: updatedUser.ai_persona
+      }
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: { message: error.message } }, 500);
+  }
 });
 
 export default auth;

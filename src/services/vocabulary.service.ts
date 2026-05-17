@@ -19,7 +19,7 @@ export class VocabularyService {
    * Lấy danh sách từ vựng với filter, kết quả được cache 1 giờ
    */
   async getAll(params: { level?: string; topic?: string; limit?: number; offset?: number } = {}) {
-    const cacheKey = `vocab:${params.level || 'all'}:${params.topic || 'all'}:${params.limit || 100}:${params.offset || 0}`;
+    const cacheKey = `vocab:${params.level || 'all'}:${params.topic || 'all'}:${params.limit || 'all'}:${params.offset || 0}`;
 
     if (this.cache) {
       const cached = await this.cache.get(cacheKey);
@@ -35,10 +35,14 @@ export class VocabularyService {
       query = query.where(and(...conditions));
     }
 
-    const result = await query
-      .limit(params.limit || 100)
-      .offset(params.offset || 0)
-      .all();
+    if (params.limit) {
+      query = query.limit(params.limit);
+    }
+    if (params.offset) {
+      query = query.offset(params.offset);
+    }
+
+    const result = await query.all();
 
     if (this.cache) {
       await this.cache.put(cacheKey, JSON.stringify(result), { expirationTtl: CACHE_TTL });

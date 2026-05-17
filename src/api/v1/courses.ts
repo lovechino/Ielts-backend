@@ -7,6 +7,10 @@ import { QuestionGroupService } from '../../services/question-group.service';
 import { AIService } from '../../services/ai.service';
 import { JobService } from '../../services/job.service';
 import type { Bindings } from '../../index';
+import { jwt } from 'hono/jwt';
+import { drizzle } from 'drizzle-orm/d1';
+import { and, eq } from 'drizzle-orm';
+import { courseEnrollments } from '../../db/schema';
 
 const courseRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
 
@@ -37,6 +41,58 @@ courseRouter.get('/:course_id', async (c) => {
   return c.json({ success: true, data: course });
 });
 
+// POST /api/v1/courses/:course_id/enroll
+courseRouter.post('/:course_id/enroll', async (c, next) => {
+  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const jwtMiddleware = jwt({ secret, alg: 'HS256' });
+  return jwtMiddleware(c, next);
+}, async (c) => {
+  const payload = c.get('jwtPayload') as any;
+  const userId = payload.sub;
+  const courseId = c.req.param('course_id');
+  const db = drizzle(c.env.DB);
+
+  try {
+    const existing = await db.select().from(courseEnrollments)
+      .where(and(eq(courseEnrollments.user_id, userId), eq(courseEnrollments.course_id, courseId)))
+      .get();
+
+    if (existing) {
+      return c.json({ success: true, data: existing, message: 'Already enrolled' });
+    }
+
+    const newEnrollment = await db.insert(courseEnrollments)
+      .values({ user_id: userId, course_id: courseId })
+      .returning()
+      .get();
+
+    return c.json({ success: true, data: newEnrollment });
+  } catch (error: any) {
+    return c.json({ success: false, error: { message: error.message } }, 500);
+  }
+});
+
+// GET /api/v1/courses/:course_id/enroll-status
+courseRouter.get('/:course_id/enroll-status', async (c, next) => {
+  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const jwtMiddleware = jwt({ secret, alg: 'HS256' });
+  return jwtMiddleware(c, next);
+}, async (c) => {
+  const payload = c.get('jwtPayload') as any;
+  const userId = payload.sub;
+  const courseId = c.req.param('course_id');
+  const db = drizzle(c.env.DB);
+
+  try {
+    const existing = await db.select().from(courseEnrollments)
+      .where(and(eq(courseEnrollments.user_id, userId), eq(courseEnrollments.course_id, courseId)))
+      .get();
+
+    return c.json({ success: true, data: { enrolled: !!existing, status: existing?.status } });
+  } catch (error: any) {
+    return c.json({ success: false, error: { message: error.message } }, 500);
+  }
+});
 
 // GET /api/v1/courses/lessons/:lesson_id
 courseRouter.get('/lessons/:lesson_id', async (c) => {

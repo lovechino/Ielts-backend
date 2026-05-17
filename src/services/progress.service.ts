@@ -1,7 +1,7 @@
 import { D1Database } from '@cloudflare/workers-types';
 import { drizzle } from 'drizzle-orm/d1';
-import { userProgress, questions, lessons, passages, questionGroups, submissions, users } from '../db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { userProgress, questions, lessons, passages, submissions, users } from '../db/schema';
+import { eq, and } from 'drizzle-orm';
 import { AIService } from './ai.service';
 
 export class ProgressService {
@@ -15,16 +15,6 @@ export class ProgressService {
    * Lấy tiến trình học tập của user cho một lesson cụ thể
    */
   async getProgress(userId: string, lessonId: string) {
-    // Đảm bảo user tồn tại (vì mình chưa làm Auth)
-    const user = await this.db.select().from(users).where(eq(users.id, userId)).get();
-    if (!user && userId === 'test-user-id') {
-      await this.db.insert(users).values({
-        id: 'test-user-id',
-        email: 'test@example.com',
-        full_name: 'Test Student'
-      }).run();
-    }
-
     return await this.db.select()
       .from(userProgress)
       .where(
@@ -129,10 +119,13 @@ export class ProgressService {
 
     if (lesson.lesson_type === 'writing') {
       // CHẤM ĐIỂM WRITING BẰNG AI
+      const user = await this.db.select().from(users).where(eq(users.id, userId)).get();
+      const persona = user?.ai_persona || 'professional';
+      
       const submissionRows = [];
       for (const studentAns of answers) {
         const passage = allPassages[0];
-        const aiResult = await aiService.gradeWriting(passage?.content_html || '', studentAns.answer);
+        const aiResult = await aiService.gradeWriting(passage?.content_html || '', studentAns.answer, persona);
 
         results.push({
           question_id: studentAns.question_id,

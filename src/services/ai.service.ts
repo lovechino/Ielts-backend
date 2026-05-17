@@ -95,9 +95,19 @@ export class AIService {
   /**
    * Chấm điểm bài thi Writing dựa trên tiêu chí IELTS
    */
-  async gradeWriting(taskPrompt: string, studentAnswer: string) {
+  async gradeWriting(taskPrompt: string, studentAnswer: string, persona: string = 'professional') {
+    let personaInstruction = "You are a professional IELTS Examiner.";
+    
+    if (persona === 'humorous') {
+      personaInstruction = "You are a hilarious and witty IELTS Examiner. Crack a few light-hearted jokes and use humor while giving your feedback, but still provide accurate grading.";
+    } else if (persona === 'strict') {
+      personaInstruction = "You are a very strict, traditional, and no-nonsense IELTS examiner. Point out mistakes directly and be firm in your feedback.";
+    } else if (persona === 'encouraging') {
+      personaInstruction = "You are an incredibly supportive, kind, and encouraging IELTS tutor. Always start with praise, highlight the student's strengths, and gently point out areas for improvement.";
+    }
+
     const prompt = `
-      You are a professional IELTS Examiner. Grade the following student response based on the official IELTS Writing Task criteria.
+      ${personaInstruction} Grade the following student response based on the official IELTS Writing Task criteria.
       
       TASK PROMPT:
       ${taskPrompt}
