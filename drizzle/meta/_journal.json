@@ -57,6 +57,48 @@
       "when": 1778899274169,
       "tag": "0007_device_push_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1779190782153,
+      "tag": "0008_panoramic_the_executioner",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1779192284261,
+      "tag": "0009_naive_chameleon",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1779254282594,
+      "tag": "0010_unknown_susan_delgado",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1779255753224,
+      "tag": "0011_icy_spiral",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1779257477427,
+      "tag": "0012_lazy_wallow",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1779409342390,
+      "tag": "0013_shallow_sabretooth",
+      "breakpoints": true
     }
   ]
 }

@@ -5,8 +5,11 @@ import { eq } from 'drizzle-orm';
 import { users, courseEnrollments, courses } from '../../db/schema';
 import bcrypt from 'bcryptjs';
 import { Bindings } from '../../index';
+import googleAuth from './auth-google';
 
 const auth = new Hono<{ Bindings: Bindings }>();
+
+auth.route('/google', googleAuth);
 
 // Password Hashing helpers
 const hashPassword = async (password: string) => {

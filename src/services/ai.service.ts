@@ -31,9 +31,15 @@ export class AIService {
          - Extract the Topic and any suggestions/requirements.
          - IMPORTANT: Treat each Writing Task as a "passage" with its own title and requirements as the content.
 
+      3. If it's a SPEAKING test:
+         - Identify the Speaking Part (Part 1, 2, or 3).
+         - Extract the context or main prompt as the "passage" content.
+         - Extract the individual speaking questions.
+         - NEVER generate options for Speaking questions. Set options to null.
+
       OUTPUT FORMAT (JSON):
       {
-        "type": "READING | WRITING",
+        "type": "READING | WRITING | SPEAKING",
         "sections": [
           {
             "passage": { "title": "...", "content_html": "..." },
@@ -41,9 +47,9 @@ export class AIService {
               {
                 "title": "...",
                 "instruction": "...",
-                "group_type": "MULTIPLE_CHOICE | TRUE_FALSE_NOT_GIVEN | FILL_BLANK | WRITING_TASK",
+                "group_type": "MULTIPLE_CHOICE | TRUE_FALSE_NOT_GIVEN | FILL_BLANK | WRITING_TASK | SPEAKING_PROMPT",
                 "questions": [
-                  { "content": "...", "options": {}, "correct_answer": "..." }
+                  { "content": "...", "options": null, "correct_answer": "..." }
                 ]
               }
             ]

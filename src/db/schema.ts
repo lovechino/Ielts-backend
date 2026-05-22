@@ -15,6 +15,10 @@ export const users = sqliteTable('users', {
   avatar_url: text('avatar_url'),
   is_active: integer('is_active', { mode: 'boolean' }).default(true),
   ai_persona: text('ai_persona').default('professional'), // professional, humorous, strict, encouraging
+  timezone: text('timezone').default('UTC'),
+  current_streak: integer('current_streak').default(0),
+  longest_streak: integer('longest_streak').default(0),
+  last_active_date: text('last_active_date'),
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
   updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
 });
@@ -46,6 +50,7 @@ export const lessons = sqliteTable('lessons', {
   time_limit: integer('time_limit').default(60), // in minutes
   is_test: integer('is_test', { mode: 'boolean' }).default(false),
   test_type: text('test_type'), // mini, full, practice
+  speaking_part: integer('speaking_part'), // 1 | 2 | 3 (optional, for speaking skill mini tests)
 });
 
 export const passages = sqliteTable('passages', {
@@ -111,13 +116,26 @@ export const userProgress = sqliteTable('user_progress', {
   }
 });
 
+export const vocabCourses = sqliteTable('vocab_courses', {
+  id: uuid('id'),
+  title: text('title').notNull(),
+  slug: text('slug').notNull().unique(),
+  description: text('description'),
+  thumbnail_url: text('thumbnail_url'),
+  structure_type: text('structure_type').default('cefr_levels').notNull(),
+});
+
 export const vocabulary = sqliteTable('vocabulary', {
   id: uuid('id'),
+  vocab_course_id: text('vocab_course_id').references(() => vocabCourses.id, { onDelete: 'cascade' }),
   word: text('word').notNull().unique(),
   definition: text('definition'),
+  definition_vi: text('definition_vi'),
   example: text('example'),
+  example_vi: text('example_vi'),
   topic: text('topic'),
   pronunciation: text('pronunciation'),
+  part_of_speech: text('part_of_speech'),
   synonyms: text('synonyms', { mode: 'json' }),
   antonyms: text('antonyms', { mode: 'json' }),
   level: text('level'),
@@ -134,3 +152,62 @@ export const courseEnrollments = sqliteTable('course_enrollments', {
     userCourseUc: unique('_user_course_uc').on(table.user_id, table.course_id)
   }
 });
+
+export const speakingSessions = sqliteTable('speaking_sessions', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  persona_id: text('persona_id').notNull(), // 'james' | 'emily' | 'dr_chen' | 'sarah'
+  topic: text('topic').notNull(),
+  part: integer('part').notNull(),          // 1 | 2 | 3
+  status: text('status').default('active'), // 'active' | 'completed'
+  turn_count: integer('turn_count').default(0),
+  average_band: real('average_band'),
+  report: text('report', { mode: 'json' }), // SessionReport JSON
+  started_at: timestamp('started_at').default(sql`CURRENT_TIMESTAMP`),
+  ended_at: timestamp('ended_at'),
+});
+
+export const speakingTurns = sqliteTable('speaking_turns', {
+  id: uuid('id'),
+  session_id: text('session_id').notNull().references(() => speakingSessions.id, { onDelete: 'cascade' }),
+  transcript: text('transcript'),
+  ai_response: text('ai_response', { mode: 'json' }), // ExaminerFeedback
+  band_estimate: real('band_estimate'),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const devicePushTokens = sqliteTable('device_push_tokens', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  expo_push_token: text('expo_push_token').notNull(),
+  platform: text('platform').notNull(),
+  updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
+}, (table) => {
+  return {
+    userExpoPushUc: unique('_user_expo_push_uc').on(table.user_id, table.expo_push_token)
+  }
+});
+
+// Track vocabulary learning status per user (seen → learned → mastered)
+export const userVocabProgress = sqliteTable('user_vocab_progress', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  vocab_id: text('vocab_id').notNull().references(() => vocabulary.id, { onDelete: 'cascade' }),
+  status: text('status').default('seen'), // 'seen' | 'learned' | 'mastered'
+  reviewed_at: timestamp('reviewed_at').default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  userVocabUc: unique('_user_vocab_uc').on(table.user_id, table.vocab_id),
+}));
+
+// Track daily learning activity for streak calculation
+export const dailyActivity = sqliteTable('daily_activity', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  activity_date: text('activity_date').notNull(), // YYYY-MM-DD in user's timezone
+  source: text('source').default('mobile'),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  userDateUc: unique('_user_date_uc').on(table.user_id, table.activity_date),
+}));
+
+

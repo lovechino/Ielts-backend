@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import type { ScheduledEvent, ExecutionContext } from '@cloudflare/workers-types';
 
 // V1 Routers
 import apiRouter from './api/v1/router';
@@ -11,6 +12,10 @@ export type Bindings = {
   MY_BUCKET: R2Bucket;
   CACHE: KVNamespace;
   JWT_SECRET: string;
+  GOOGLE_CLIENT_ID: string;
+  GOOGLE_CLIENT_SECRET: string;
+  FRONTEND_URL: string;
+  ENABLE_ADMIN?: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>({ strict: false });
@@ -56,4 +61,13 @@ app.get('/health', (c) => {
 
 app.route('/api/v1', apiRouter);
 
-export default app;
+// Cron: daily streak reset at 0h UTC
+export default {
+  fetch: app.fetch,
+  scheduled: async (_event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) => {
+    const { StreakService } = await import('./services/streak.service');
+    const service = new StreakService(env.DB);
+    const resetCount = await service.batchResetStaleStreaks();
+    console.log(`[Cron] Streak reset: ${resetCount} users`);
+  },
+};

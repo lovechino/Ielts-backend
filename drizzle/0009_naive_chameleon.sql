@@ -1,0 +1,1 @@
+ALTER TABLE `lessons` ADD `speaking_part` integer;

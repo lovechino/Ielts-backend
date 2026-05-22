@@ -1,7 +1,7 @@
 import { D1Database } from '@cloudflare/workers-types';
 import { drizzle } from 'drizzle-orm/d1';
 import { userProgress, questions, lessons, passages, submissions, users } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { AIService } from './ai.service';
 
 export class ProgressService {
@@ -15,7 +15,7 @@ export class ProgressService {
    * Lấy tiến trình học tập của user cho một lesson cụ thể
    */
   async getProgress(userId: string, lessonId: string) {
-    return await this.db.select()
+    const progress = await this.db.select()
       .from(userProgress)
       .where(
         and(
@@ -24,6 +24,45 @@ export class ProgressService {
         )
       )
       .get();
+
+    if (progress && progress.status === 'completed') {
+      const lessonQuestions = await this.db.select()
+        .from(questions)
+        .where(eq(questions.lesson_id, lessonId))
+        .all();
+
+      const questionIds = lessonQuestions.map(q => q.id);
+      if (questionIds.length > 0) {
+        const userSubmissions = await this.db.select()
+          .from(submissions)
+          .where(
+            and(
+              eq(submissions.user_id, userId),
+              inArray(submissions.question_id, questionIds)
+            )
+          )
+          .all();
+
+        const results = userSubmissions.map(s => {
+          const q = lessonQuestions.find(item => item.id === s.question_id);
+          return {
+            question_id: s.question_id,
+            answer: s.answer_text,
+            is_correct: s.score !== null ? s.score > 0 : true,
+            correct_answer: q?.correct_answer ?? undefined,
+            score: s.score ?? undefined,
+            feedback: s.feedback ? (typeof s.feedback === 'string' ? JSON.parse(s.feedback) : s.feedback) : undefined
+          };
+        });
+
+        return {
+          ...progress,
+          results
+        };
+      }
+    }
+
+    return progress;
   }
 
   /**

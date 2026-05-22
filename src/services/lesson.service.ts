@@ -66,12 +66,14 @@ export class LessonService {
       course_id: data.course_id || data.courseId,
       lesson_type: data.lesson_type || data.lessonType,
       pdf_url: data.pdf_url || data.pdfUrl,
+      speaking_part: data.speaking_part !== undefined ? data.speaking_part : (data.speakingPart !== undefined ? data.speakingPart : null),
     };
     // Clean up
     delete (updateData as any).id;
     delete (updateData as any).courseId;
     delete (updateData as any).lessonType;
     delete (updateData as any).pdfUrl;
+    delete (updateData as any).speakingPart;
 
     const result = await this.db.update(lessons)
       .set(updateData)
@@ -92,7 +94,15 @@ export class LessonService {
       is_test: data.is_test ?? false,
       test_type: data.test_type || 'practice',
       time_limit: data.time_limit || 60,
+      speaking_part: data.speaking_part || data.speakingPart || null,
     };
     return mapped;
+  }
+
+  async delete(lessonId: string) {
+    const result = await this.db.delete(lessons)
+      .where(eq(lessons.id, lessonId))
+      .returning();
+    return result.length > 0;
   }
 }
