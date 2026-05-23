@@ -7,6 +7,37 @@ export class AIService {
     this.ai = ai;
   }
 
+  private cleanJsonString(str: string): string {
+    let cleaned = "";
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+
+      if (char === '"' && !escaped) {
+        inString = !inString;
+        cleaned += char;
+      } else if (char === '\\' && !escaped) {
+        escaped = true;
+        cleaned += char;
+      } else {
+        if (char === '\n' || char === '\r' || char === '\t') {
+          if (inString) {
+            cleaned += "\\n";
+          } else {
+            cleaned += " ";
+          }
+        } else {
+          cleaned += char;
+        }
+        escaped = false;
+      }
+    }
+
+    return cleaned.replace(/,\s*([\]}])/g, '$1');
+  }
+
   /**
    * Sử dụng Llama-3 để bóc tách text thô thành cấu trúc IELTS
    */
@@ -19,10 +50,11 @@ export class AIService {
       ${rawText}
 
       INSTRUCTIONS:
-      1. If it's a READING test:
-         - Identify the Reading Passage (title and content).
-         - Identify Question Groups (e.g., Questions 1-5).
-         - For each question, extract content, options (if any), and correct answer.
+       1. If it's a READING test:
+          - Identify ALL Reading Passages (typically 2-3 passages per test). DO NOT skip any.
+          - For EACH passage, extract its title and full content.
+          - After each passage, identify its corresponding Question Groups.
+          - For each question, extract content, options (if any), and correct answer.
       
       2. If it's a WRITING test (contains WRITING TASK 1/2):
          - Identify each Writing Task.
@@ -62,12 +94,12 @@ export class AIService {
 
     console.log('AI START: Processing text length:', rawText.length);
     try {
-      const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct', {
+      const response = await this.ai.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
         messages: [
           { role: 'system', content: 'You are a JSON generator. Output ONLY valid JSON. No preamble, no explanation.' },
           { role: 'user', content: prompt }
         ],
-        max_tokens: 2048
+        max_tokens: 4096
       });
 
       if (!response || !response.response) {
@@ -83,6 +115,8 @@ export class AIService {
       if (startIdx !== -1 && endIdx !== -1) {
         jsonStr = jsonStr.substring(startIdx, endIdx + 1);
       }
+
+      jsonStr = this.cleanJsonString(jsonStr);
 
       try {
         const parsed = JSON.parse(jsonStr);
@@ -155,36 +189,8 @@ export class AIService {
         jsonStr = jsonStr.substring(startIdx, endIdx + 1);
       }
 
-      // 2. Vệ sinh JSON cơ bản: Xử lý xuống dòng và các ký tự điều khiển
-      let cleaned = "";
-      let inString = false;
-      let escaped = false;
-      
-      for (let i = 0; i < jsonStr.length; i++) {
-        const char = jsonStr[i];
-        
-        if (char === '"' && !escaped) {
-          inString = !inString;
-          cleaned += char;
-        } else if (char === '\\' && !escaped) {
-          escaped = true;
-          cleaned += char;
-        } else {
-          if (char === '\n' || char === '\r' || char === '\t') {
-            if (inString) {
-              cleaned += "\\n"; // Escape newline trong chuỗi
-            } else {
-              cleaned += " "; // Thay thế bằng space nếu ở ngoài chuỗi
-            }
-          } else {
-            cleaned += char;
-          }
-          escaped = false;
-        }
-      }
-
-      // 3. Loại bỏ dấu phẩy thừa (trailing commas)
-      cleaned = cleaned.replace(/,\s*([\]}])/g, '$1');
+      // 2. Vệ sinh JSON: Xử lý xuống dòng và trailing commas
+      let cleaned = this.cleanJsonString(jsonStr);
 
       try {
         const parsed = JSON.parse(cleaned);

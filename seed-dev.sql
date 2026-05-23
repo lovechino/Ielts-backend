@@ -3,7 +3,7 @@
 
 -- Create an admin user (password: admin123, bcrypt hash)
 INSERT OR IGNORE INTO users (id, email, password_hash, full_name, role, timezone)
-VALUES ('admin-001', 'admin@ielts.local', '$2a$10$8KzQMGx5C5Kc5Q5y5Q5z5u5Q5y5Q5z5u5Q5y5Q5z5u5Q5y5Q5z5u', 'Admin User', 'admin', 'Asia/Ho_Chi_Minh');
+VALUES ('admin-001', 'admin@ielts.local', '$2b$10$W8ntz7RxIfFz8d1xWB5RI.YaHUd8Nk3GcoCulkTI2HRKgHLwn0tpS', 'Admin User', 'admin', 'Asia/Ho_Chi_Minh');
 
 -- Create a test student user (password: test123)
 INSERT OR IGNORE INTO users (id, email, password_hash, full_name, role, timezone)
