@@ -10,7 +10,7 @@
     "JWT_SECRET": "your-very-secret-key-change-this-in-production",
     "GOOGLE_CLIENT_ID": "",
     "GOOGLE_CLIENT_SECRET": "",
-    "FRONTEND_URL": "http://localhost:3000",
+    "FRONTEND_URL": "http://localhost:8081",
     "ENABLE_ADMIN": "true"
   },
   "kv_namespaces": [

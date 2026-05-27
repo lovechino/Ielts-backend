@@ -18,6 +18,7 @@ vocabRouter.get('/', async (c) => {
   const level = c.req.query('level');
   const topic = c.req.query('topic');
   const vocab_course_id = c.req.query('vocab_course_id');
+  const structure_type = c.req.query('structure_type');
   const limit = c.req.query('limit');
   const offset = c.req.query('offset');
 
@@ -26,6 +27,7 @@ vocabRouter.get('/', async (c) => {
     level,
     topic,
     vocab_course_id,
+    structure_type,
     limit: limit ? parseInt(limit) : undefined,
     offset: offset ? parseInt(offset) : undefined
   });

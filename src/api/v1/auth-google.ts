@@ -11,7 +11,9 @@ const googleAuth = new Hono<{ Bindings: Bindings }>();
 
 function decodeIdToken(idToken: string): Record<string, any> {
   const payloadBase64 = idToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-  return JSON.parse(atob(payloadBase64));
+  // Dùng escape/decodeURIComponent kết hợp atob để giữ nguyên được tiếng Việt (UTF-8)
+  const decodedStr = decodeURIComponent(escape(atob(payloadBase64)));
+  return JSON.parse(decodedStr);
 }
 
 async function findOrCreateUser(
@@ -91,10 +93,13 @@ googleAuth.post('/', async (c) => {
       return c.json({ success: false, error: 'Missing authorization code' }, 400);
     }
 
+    const clientId = c.env.GOOGLE_CLIENT_ID;
+    const clientSecret = c.env.GOOGLE_CLIENT_SECRET;
+
     const params: Record<string, string> = {
       code,
-      client_id: c.env.GOOGLE_CLIENT_ID,
-      client_secret: c.env.GOOGLE_CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       grant_type: 'authorization_code',
     };
     if (redirect_uri) {
@@ -115,7 +120,7 @@ googleAuth.post('/', async (c) => {
     const tokens = await tokenResponse.json() as Record<string, any>;
     const payload = decodeIdToken(tokens.id_token);
 
-    if (payload.aud !== c.env.GOOGLE_CLIENT_ID) {
+    if (payload.aud !== clientId) {
       return c.json({ success: false, error: 'Token audience mismatch' }, 401);
     }
     if (payload.iss !== 'https://accounts.google.com' && payload.iss !== 'accounts.google.com') {
@@ -172,8 +177,10 @@ googleAuth.get('/', async (c) => {
   const redirectUri = `${url.origin}/api/v1/auth/google/callback`;
   const state = crypto.randomUUID();
 
+  const clientId = c.env.GOOGLE_CLIENT_ID || '109247400665-t0ck01im9o7neqkcms0nclkn2s674089.apps.googleusercontent.com';
+
   const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${new URLSearchParams({
-    client_id: c.env.GOOGLE_CLIENT_ID,
+    client_id: clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
     scope: 'openid email profile',
@@ -204,13 +211,16 @@ googleAuth.get('/callback', async (c) => {
       return c.json({ success: false, error: 'Missing authorization code' }, 400);
     }
 
+    const clientId = c.env.GOOGLE_CLIENT_ID;
+    const clientSecret = c.env.GOOGLE_CLIENT_SECRET;
+
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code,
-        client_id: c.env.GOOGLE_CLIENT_ID,
-        client_secret: c.env.GOOGLE_CLIENT_SECRET,
+        client_id: clientId,
+        client_secret: clientSecret,
         redirect_uri: redirectUri,
         grant_type: 'authorization_code',
       }).toString(),
@@ -224,7 +234,7 @@ googleAuth.get('/callback', async (c) => {
     const tokens = await tokenResponse.json() as Record<string, any>;
     const payload = decodeIdToken(tokens.id_token);
 
-    if (payload.aud !== c.env.GOOGLE_CLIENT_ID) {
+    if (payload.aud !== clientId) {
       return c.json({ success: false, error: 'Token audience mismatch' }, 401);
     }
 
@@ -248,7 +258,9 @@ googleAuth.get('/callback', async (c) => {
       c.env.JWT_SECRET
     );
 
-    const frontendUrl = c.env.FRONTEND_URL || 'http://localhost:3000';
+    // Bỏ qua c.env.FRONTEND_URL vì nó đang dính cổng 3000 của dự án NextJS cũ trong wrangler.jsonc
+    const frontendUrl = 'http://localhost:8081';
+
     return buildRedirectRes(
       `${frontendUrl}/auth/callback?token=${encodeURIComponent(token)}`,
       { name: 'google_oauth_state', value: '', maxAge: 0 }

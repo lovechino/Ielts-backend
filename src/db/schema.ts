@@ -14,7 +14,7 @@ export const users = sqliteTable('users', {
   target_band: real('target_band'),
   avatar_url: text('avatar_url'),
   is_active: integer('is_active', { mode: 'boolean' }).default(true),
-  ai_persona: text('ai_persona').default('professional'), // professional, humorous, strict, encouraging
+  ai_persona: text('ai_persona').default('james'), // james, emily, dr_chen, sarah
   timezone: text('timezone').default('UTC'),
   current_streak: integer('current_streak').default(0),
   longest_streak: integer('longest_streak').default(0),
@@ -28,6 +28,15 @@ export const oauthAccounts = sqliteTable('oauth_accounts', {
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   provider: text('provider').notNull(),
   provider_id: text('provider_id').notNull(),
+});
+
+export const refreshTokens = sqliteTable('refresh_tokens', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  token_hash: text('token_hash').notNull(),
+  expires_at: timestamp('expires_at').notNull(),
+  revoked_at: timestamp('revoked_at'),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const courses = sqliteTable('courses', {

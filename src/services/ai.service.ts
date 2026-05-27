@@ -135,14 +135,14 @@ export class AIService {
   /**
    * Chấm điểm bài thi Writing dựa trên tiêu chí IELTS
    */
-  async gradeWriting(taskPrompt: string, studentAnswer: string, persona: string = 'professional') {
+  async gradeWriting(taskPrompt: string, studentAnswer: string, persona: string = 'james') {
     let personaInstruction = "You are a professional IELTS Examiner.";
     
-    if (persona === 'humorous') {
+    if (persona === 'sarah') {
       personaInstruction = "You are a hilarious and witty IELTS Examiner. Crack a few light-hearted jokes and use humor while giving your feedback, but still provide accurate grading.";
-    } else if (persona === 'strict') {
+    } else if (persona === 'dr_chen') {
       personaInstruction = "You are a very strict, traditional, and no-nonsense IELTS examiner. Point out mistakes directly and be firm in your feedback.";
-    } else if (persona === 'encouraging') {
+    } else if (persona === 'emily') {
       personaInstruction = "You are an incredibly supportive, kind, and encouraging IELTS tutor. Always start with praise, highlight the student's strengths, and gently point out areas for improvement.";
     }
 
