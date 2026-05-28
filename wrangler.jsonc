@@ -37,11 +37,50 @@
   "ai": {
     "binding": "AI"
   },
+  "queues": {
+    "producers": [
+      {
+        "binding": "SCORING_QUEUE",
+        "queue": "scoring-queue"
+      },
+      {
+        "binding": "SPEAKING_QUEUE",
+        "queue": "speaking-queue"
+      },
+      {
+        "binding": "EMAIL_QUEUE",
+        "queue": "email-queue"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "scoring-queue",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 3
+      },
+      {
+        "queue": "speaking-queue",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 3
+      },
+      {
+        "queue": "email-queue",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3
+      }
+    ]
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
   },
   "triggers": {
-    "crons": ["0 0 * * *"]
+    "crons": [
+      "0 0 * * *",
+      "0 9 * * 1"
+    ]
   }
 }

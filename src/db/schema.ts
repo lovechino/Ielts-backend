@@ -11,6 +11,7 @@ export const users = sqliteTable('users', {
   password_hash: text('password_hash'),
   full_name: text('full_name').notNull(),
   role: text('role').default('student'),
+  tier: text('tier').default('free'),       // 'free' | 'premium'
   target_band: real('target_band'),
   avatar_url: text('avatar_url'),
   is_active: integer('is_active', { mode: 'boolean' }).default(true),
@@ -59,7 +60,9 @@ export const lessons = sqliteTable('lessons', {
   time_limit: integer('time_limit').default(60), // in minutes
   is_test: integer('is_test', { mode: 'boolean' }).default(false),
   test_type: text('test_type'), // mini, full, practice
-  speaking_part: integer('speaking_part'), // 1 | 2 | 3 (optional, for speaking skill mini tests)
+  speaking_part: integer('speaking_part'), // 1 | 2 | 3 (legacy single-part)
+  lesson_parts: text('lesson_parts', { mode: 'json' }), // Array of numbers: [1, 2, 3] or [1, 2] (tasks)
+  metadata: text('metadata', { mode: 'json' }), // Flexible config for any skill
 });
 
 export const passages = sqliteTable('passages', {
@@ -111,12 +114,17 @@ export const userProgress = sqliteTable('user_progress', {
   id: uuid('id'),
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   lesson_id: text('lesson_id').notNull().references(() => lessons.id, { onDelete: 'cascade' }),
-  status: text('status').default('not_started'), // not_started, in_progress, completed
+  status: text('status').default('not_started'), // not_started, in_progress, completed, scoring
   score: real('score').default(0.0),
   total_questions: real('total_questions').default(0.0),
   correct_answers: real('correct_answers').default(0.0),
-  draft_answers: text('draft_answers', { mode: 'json' }), // Store selectedAnswers JSON
-  time_left: integer('time_left'), // Remaining seconds
+  draft_answers: text('draft_answers', { mode: 'json' }),
+  time_left: integer('time_left'),
+  // Deferred scoring fields
+  scoring_status: text('scoring_status').default('none'), // none | pending | completed | failed
+  full_result_unlocked: integer('full_result_unlocked', { mode: 'boolean' }).default(false),
+  preview_score: real('preview_score'),          // band score tổng — luôn hiện cho free
+  result_available_at: timestamp('result_available_at'), // thời điểm kết quả sẵn sàng
   completed_at: timestamp('completed_at'),
   updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
 }, (table) => {
@@ -171,7 +179,10 @@ export const speakingSessions = sqliteTable('speaking_sessions', {
   status: text('status').default('active'), // 'active' | 'completed'
   turn_count: integer('turn_count').default(0),
   average_band: real('average_band'),
-  report: text('report', { mode: 'json' }), // SessionReport JSON
+  report: text('report', { mode: 'json' }), // SessionReport JSON (full)
+  // Deferred report fields
+  report_available_at: timestamp('report_available_at'), // khi nào free user được xem
+  report_unlocked: integer('report_unlocked', { mode: 'boolean' }).default(false),
   started_at: timestamp('started_at').default(sql`CURRENT_TIMESTAMP`),
   ended_at: timestamp('ended_at'),
 });

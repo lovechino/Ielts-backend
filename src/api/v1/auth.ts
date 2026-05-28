@@ -2,10 +2,11 @@ import { Hono } from 'hono';
 import { jwt, sign } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, and, gt, isNull } from 'drizzle-orm';
-import { users, courseEnrollments, courses, refreshTokens } from '../../db/schema';
+import { users, courseEnrollments, courses, refreshTokens, devicePushTokens } from '../../db/schema';
 import bcrypt from 'bcryptjs';
 import { Bindings } from '../../index';
 import googleAuth from './auth-google';
+import { authRateLimit } from '../../middleware/rateLimit';
 
 const auth = new Hono<{ Bindings: Bindings }>();
 
@@ -72,7 +73,7 @@ async function refreshAccessToken(rawRefresh: string, secret: string, db: Return
 }
 
 // POST /register
-auth.post('/register', async (c) => {
+auth.post('/register', authRateLimit, async (c) => {
   const { email, password, full_name } = await c.req.json();
   if (!email || !password || !full_name) {
     return c.json({ success: false, error: 'Missing required fields' }, 400);
@@ -97,6 +98,14 @@ auth.post('/register', async (c) => {
 
     const tokens = await generateTokens(newUser.id, newUser.email, newUser.role, secret, db);
 
+    if (c.env.EMAIL_QUEUE) {
+      await c.env.EMAIL_QUEUE.send({
+        type: 'welcome',
+        email: newUser.email,
+        name: newUser.full_name
+      });
+    }
+
     return c.json({
       success: true,
       data: {
@@ -116,7 +125,7 @@ auth.post('/register', async (c) => {
 });
 
 // POST /login
-auth.post('/login', async (c) => {
+auth.post('/login', authRateLimit, async (c) => {
   const { email, password } = await c.req.json();
   const db = drizzle(c.env.DB);
   const secret = c.env.JWT_SECRET || 'default-secret-key';
@@ -293,6 +302,72 @@ auth.patch('/me', async (c, next) => {
     });
   } catch (error: any) {
     return c.json({ success: false, error: { message: error.message } }, 500);
+  }
+});
+
+// POST /device-token (Protected) — đăng ký Expo push token
+auth.post('/device-token', async (c, next) => {
+  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  return jwt({ secret, alg: 'HS256' })(c, next);
+}, async (c) => {
+  const payload = c.get('jwtPayload') as any;
+  const userId = payload.sub;
+  const { expo_push_token, platform } = await c.req.json();
+
+  if (!expo_push_token || !platform) {
+    return c.json({ success: false, error: 'expo_push_token and platform are required' }, 400);
+  }
+
+  const db = drizzle(c.env.DB);
+
+  try {
+    await db.insert(devicePushTokens)
+      .values({
+        user_id: userId,
+        expo_push_token,
+        platform,
+        updated_at: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [devicePushTokens.user_id, devicePushTokens.expo_push_token],
+        set: { platform, updated_at: new Date() },
+      })
+      .run();
+
+    return c.json({ success: true, data: null });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// DELETE /device-token (Protected) — xóa push token khi logout
+auth.delete('/device-token', async (c, next) => {
+  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  return jwt({ secret, alg: 'HS256' })(c, next);
+}, async (c) => {
+  const payload = c.get('jwtPayload') as any;
+  const userId = payload.sub;
+  const { expo_push_token } = await c.req.json();
+
+  if (!expo_push_token) {
+    return c.json({ success: false, error: 'expo_push_token is required' }, 400);
+  }
+
+  const db = drizzle(c.env.DB);
+
+  try {
+    await db.delete(devicePushTokens)
+      .where(
+        and(
+          eq(devicePushTokens.user_id, userId),
+          eq(devicePushTokens.expo_push_token, expo_push_token),
+        )
+      )
+      .run();
+
+    return c.json({ success: true, data: null });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
   }
 });
 

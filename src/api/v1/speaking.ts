@@ -1,55 +1,71 @@
 import { Hono } from 'hono';
 import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, and } from 'drizzle-orm';
 import type { Bindings } from '../../index';
-import { speakingSessions, speakingTurns } from '../../db/schema';
+import { speakingSessions, speakingTurns, users, lessons } from '../../db/schema';
+import { aiRateLimit } from '../../middleware/rateLimit';
+import { sendPushNotification } from '../../services/push.service';
+import { processSpeakingReport } from '../../workers/speaking-consumer';
+
+const SPEAKING_REPORT_DELAY_MS = 5 * 60 * 1000; // 5 phút cho free user
 
 const speakingRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
 
 export const PERSONAS = {
   james: {
     id: 'james', name: 'James', accent: 'en-GB',
-    systemPrompt: `You are James, a formal British IELTS examiner. Style: Polite but strict. Always respond with ONLY valid JSON.`
+    systemPrompt: `You are James, a Senior British IELTS Examiner. Your tone is formal, extremely professional, and slightly intimidating. You value logical structure, precise vocabulary, and grammatical perfection. You never give undeserved praise and will pinpoint even minor slips in coherence.`
   },
   emily: {
     id: 'emily', name: 'Emily', accent: 'en-AU',
-    systemPrompt: `You are Emily, a warm Australian IELTS coach. Style: Encouraging, sandwich feedback. Always respond with ONLY valid JSON.`
+    systemPrompt: `You are Emily, a warm yet rigorous Australian IELTS Coach. Your style is encouraging but you follow the grading rubric strictly. You provide "sandwich feedback" (positive-critique-positive) but your Band scores reflect the hard truth of the official standards.`
   },
   dr_chen: {
     id: 'dr_chen', name: 'Dr. Chen', accent: 'en-US',
-    systemPrompt: `You are Dr. Chen, a linguistics professor and IELTS examiner. Style: Intellectual, push for abstract thinking. Always respond with ONLY valid JSON.`
+    systemPrompt: `You are Dr. Chen, a Linguistics Professor and IELTS Expert. You focus heavily on abstract thinking and lexical complexity. You will push the candidate to use more sophisticated academic collocations and complex sentence transformations (e.g., nominalization, inversion).`
   },
   sarah: {
     id: 'sarah', name: 'Sarah', accent: 'en-US',
-    systemPrompt: `You are Sarah, a high-energy American IELTS trainer. Style: Fast-paced, simulate exam pressure. Always respond with ONLY valid JSON.`
+    systemPrompt: `You are Sarah, a high-intensity American IELTS Trainer. You simulate high-pressure exam environments. You speak clearly but expect fast, well-developed responses. You are particularly strict about "Fluency & Coherence" and will penalize heavily for hesitation markers like "uhm" and "ah".`
   }
 };
 
 const IELTS_BAND_DESCRIPTORS = `
-FLUENCY & COHERENCE:
-- Band 9: Fluent with rare self-correction; hesitation only content-related
-- Band 8: Occasional self-correction; hesitation usually content-related
-- Band 7: Speaks at length without effort; some language-related hesitation
-- Band 6: Willing to speak at length; may lose coherence, repeat, self-correct
-
-LEXICAL RESOURCE:
-- Band 9: Full flexibility and precision across all topics
-- Band 8: Wide vocabulary; conveys precise meaning flexibly
-- Band 7: Flexible vocabulary; uses some less common and idiomatic items
-- Band 6: Wide enough vocabulary for topics; meaning clear despite errors
-
-GRAMMATICAL RANGE & ACCURACY:
-- Band 9: Full range of structures naturally; consistently accurate
-- Band 8: Wide range flexibly; frequent error-free sentences
-- Band 7: Range of complex structures; frequently error-free
-- Band 6: Mix of simple and complex; limited flexibility; frequent mistakes
-
-PRONUNCIATION:
-- Band 9: Full range of features with precision and subtlety
-- Band 8: Wide range of features; flexible use
-- Band 7: Positive features of Band 6 plus some of Band 8
-- Band 6: Range of features with mixed control
+IELTS SPEAKING OFFICIAL CRITERIA (DETAILED):
+1. FLUENCY & COHERENCE (FC):
+   - 9.0: Full fluency, rare repetition/self-correction. Cohesion fully developed.
+   - 8.0: Speaks fluently with only occasional repetition. Coherence is maintained.
+   - 7.0: Speaks at length without effort. Uses a range of connectives/discourse markers.
+   - 6.0: Willing to speak at length but may lose coherence due to repetition or self-correction.
+   - 5.0: Slow speech with frequent repetition. Overuses basic linking words ("and", "but").
+   - 4.0: Long pauses, limited linking words, cannot respond without effort.
+   - 3.0: Speaks with long pauses. Has limited ability to link simple sentences. Gives only basic responses.
+   - 2.0: Pauses are very long. Almost no ability to link sentences. Communication is extremely difficult.
+2. LEXICAL RESOURCE (LR):
+   - 9.0: Full flexibility and precision. Uses idiomatic language naturally.
+   - 8.0: Wide vocabulary, uses less common and idiomatic items with minor inaccuracies.
+   - 7.0: Uses less common vocabulary/collocations. Good paraphrasing skills.
+   - 6.0: Wide enough vocabulary for topics but lacks precision or appropriate style at times.
+   - 5.0: Limited vocabulary for familiar topics. Repetitive word choices.
+   - 4.0: Only basic vocabulary. Unable to convey complex ideas.
+   - 3.0: Uses only very basic words for personal information. High frequency of errors.
+   - 2.0: Only isolated words or memorized phrases. No real vocabulary range.
+3. GRAMMATICAL RANGE & ACCURACY (GRA):
+   - 9.0: Natural use of full range of structures. Consistently accurate.
+   - 8.0: Wide range of complex structures flexibly used. Majority of sentences error-free.
+   - 7.0: Mix of simple and complex structures. Many error-free sentences.
+   - 6.0: Mix of simple and complex forms but with limited flexibility; errors persist.
+   - 5.0: Relies on simple sentences. Frequent errors impede communication.
+   - 4.0: Basic sentence forms only. Frequent errors cause misunderstandings.
+   - 3.0: Attempts basic sentence forms but with very high error rate. Communication is limited.
+   - 2.0: Cannot produce complete sentences. Only basic word fragments.
+4. PRONUNCIATION (P) - [Estimated via Transcript Clarity]:
+   - 9.0: Crystal clear. All words accurately transcribed by STT.
+   - 7.5: High clarity. Complex words are captured correctly.
+   - 6.0: Moderate clarity. Some mispronunciations lead to minor STT errors.
+   - 4.0: Significant mispronunciations causing STT to fail frequently.
+   - 2.0: Speech is almost unintelligible. STT fails to capture most words accurately.
 `;
 
 // Protect all speaking routes
@@ -89,7 +105,7 @@ function base64ToUint8Array(base64: string): Uint8Array {
 const getKVKey = (id: string) => `speaking:ctx:${id}`;
 
 // 0. POST /transcribe
-speakingRouter.post('/transcribe', async (c) => {
+speakingRouter.post('/transcribe', aiRateLimit, async (c) => {
   const { audio } = await c.req.json();
   if (!audio) return c.json({ success: false, error: 'No audio provided' }, 400);
   
@@ -105,43 +121,90 @@ speakingRouter.post('/transcribe', async (c) => {
 });
 
 // 1. POST /session/start
-speakingRouter.post('/session/start', async (c) => {
+
+speakingRouter.post('/session/start', aiRateLimit, async (c) => {
   try {
     const payload = c.get('jwtPayload') as any;
     const userId = payload.sub;
-    const { personaId, topic, part } = await c.req.json();
+    const { personaId, topic, part, lesson_id } = await c.req.json();
     const db = drizzle(c.env.DB);
     const sessionId = crypto.randomUUID();
 
+    let sessionTopic = topic;
+    let partsList = part ? [parseInt(part)] : [1];
+    let fullContent: any = null;
+
+    // Load structured data if lesson_id provided
+    if (lesson_id) {
+      const lesson = await db.select().from(lessons).where(eq(lessons.id, lesson_id)).get();
+      if (lesson) {
+        sessionTopic = lesson.title;
+        if (lesson.lesson_parts) {
+          partsList = Array.isArray(lesson.lesson_parts) ? lesson.lesson_parts : JSON.parse(lesson.lesson_parts as any);
+        }
+        if (lesson.content) {
+          try {
+            fullContent = typeof lesson.content === 'string' ? JSON.parse(lesson.content) : lesson.content;
+          } catch {
+            fullContent = { legacy_content: lesson.content };
+          }
+        }
+      }
+    }
+
     const persona = PERSONAS[personaId as keyof typeof PERSONAS] || PERSONAS.james;
-    const isPractice = topic === 'Free Practice';
+    const currentPart = partsList[0];
+    const isPractice = sessionTopic === 'Free Practice';
+
+    // Create AI Instruction based on structured content
+    let partInstruction = `Topic: ${sessionTopic}.`;
+    if (fullContent) {
+      const pData = fullContent[`part${currentPart}`];
+      if (pData) partInstruction += ` Focus on these cues: ${JSON.stringify(pData)}.`;
+    }
+
     const openingPrompt = isPractice
       ? `You are the friendly IELTS speaking examiner ${persona.name}. Start a free practice conversational session. Generate a friendly opening greeting and the first general question. Under 35 words. Return STRICT JSON: { "response": "..." }`
-      : `You are the IELTS speaking examiner ${persona.name}. Start an official Mock Test Part ${part}. Topic: ${topic}. Generate the opening greeting and give the prompt/question for the topic. Under 35 words. Return STRICT JSON: { "response": "..." }`;
+      : `You are the IELTS speaking examiner ${persona.name}. 
+Start an official Mock Test Part ${currentPart}. 
+Context: ${partInstruction}
+Available Parts in this session: ${partsList.join(', ')}.
+
+MANDATE: 
+- Generate a professional opening greeting.
+- Ask the first question for Part ${currentPart}.
+- Keep it under 35 words. 
+- Return STRICT JSON: { "response": "..." }`;
 
     const aiRes = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
       messages: [{ role: 'user', content: openingPrompt }]
     });
 
     const parsed = cleanAndParseJSON(aiRes.response || '{}');
-    const greeting = parsed.response || (isPractice ? "Hello! Let's practice. How are you today?" : `Hello. Let's start the speaking exam. Can you introduce yourself and tell me about ${topic}?`);
+    const greeting = parsed.response || (isPractice ? "Hello! Let's practice. How are you today?" : `Hello. Let's start the speaking exam. Can you introduce yourself and tell me about ${sessionTopic}?`);
 
     await db.insert(speakingSessions).values({
       id: sessionId,
       user_id: userId,
       persona_id: personaId,
-      topic,
-      part: parseInt(part) || 1,
+      topic: sessionTopic,
+      part: currentPart,
       status: 'active',
-      turn_count: 0
+      turn_count: 0,
+      started_at: new Date()
     }).run();
 
     const ctx = {
-      sessionId, userId, personaId, topic, part: parseInt(part) || 1,
+      sessionId, userId, personaId, 
+      topic: sessionTopic, 
+      partsList,
+      currentPartIndex: 0,
+      fullContent,
       conversationHistory: [
         { role: 'assistant', content: greeting }
       ],
       turnCount: 0,
+      partTurnCount: 0,
       bandScores: []
     };
 
@@ -155,7 +218,7 @@ speakingRouter.post('/session/start', async (c) => {
 });
 
 // 2. POST /session/turn
-speakingRouter.post('/session/turn', async (c) => {
+speakingRouter.post('/session/turn', aiRateLimit, async (c) => {
   try {
     const { sessionId, audio } = await c.req.json();
     const db = drizzle(c.env.DB);
@@ -181,28 +244,36 @@ speakingRouter.post('/session/turn', async (c) => {
     const persona = PERSONAS[context.personaId as keyof typeof PERSONAS] || PERSONAS.james;
     const isPractice = context.topic === 'Free Practice';
     
+    // Check for Part 2 specifics (Long turn)
+    const isPart2 = context.partsList[context.currentPartIndex] === 2;
+    
     const DESCRIPTORS = IELTS_BAND_DESCRIPTORS;
-    const systemPrompt = isPractice
-      ? `${persona.systemPrompt}
-  This is a FREE PRACTICE speaking session.
-  ${DESCRIPTORS}
-  Evaluate the user's transcript against the 4 criteria above.
-  Provide short, encouraging Vietnamese feedback.
-  Output per-criterion band (0-9) and overall band_estimate.
-  Short examiner response (<40 words) in "response".
-  Next conversational question in "next_question".
-  STRICT JSON output: { "response": "English response", "feedback": "Tiếng Việt", "band_estimate": number, "fluency": number, "lexicalResource": number, "grammaticalRange": number, "pronunciation": number, "correction": "Corrected sentence or null", "next_question": "English follow-up or null" }`
-      : `${persona.systemPrompt}
-  You are conducting an OFFICIAL MOCK TEST Part ${context.part} on the strict topic: "${context.topic}".
-  ${DESCRIPTORS}
-  CRITICAL RULES:
-  - If answer is 1-2 sentences, MAXIMUM overall band is 4.0
-  - If off-topic, MAXIMUM overall band is 2.0
-  Evaluate the transcript against the 4 criteria above.
-  Output per-criterion band (0-9) and overall band_estimate.
-  Vietnamese feedback. Short examiner response (<40 words) in "response".
-  Next question strictly related to the topic in "next_question" (or null to end).
-  STRICT JSON output: { "response": "English response", "feedback": "Tiếng Việt", "band_estimate": number, "fluency": number, "lexicalResource": number, "grammaticalRange": number, "pronunciation": number, "correction": "Corrected sentence or null", "next_question": "English follow-up or null" }`;
+    const systemPrompt = `
+You are an expert, extremely strict official IELTS Speaking Examiner.
+Your Identity: ${persona.systemPrompt}
+Session: ${isPractice ? 'FREE PRACTICE' : `OFFICIAL MOCK TEST PART ${context.partsList[context.currentPartIndex]} on "${context.topic}"`}
+Available Structure: ${JSON.stringify(context.partsList)} (Current Index: ${context.currentPartIndex})
+Full Exam Content: ${JSON.stringify(context.fullContent)}
+
+${IELTS_BAND_DESCRIPTORS}
+
+### EVALUATION MANDATES:
+1. Chain of Thought: Deeply analyze EACH of the 4 criteria BEFORE deciding the final score.
+2. Stinginess: Do NOT award Band 7.0+ unless the candidate uses complex academic vocabulary and sophisticated grammar.
+3. TRANSITION MANDATE (CRITICAL):
+   - Part 1: Ask 3-4 questions. Then return "transition_to_part": 2.
+   - Part 2: Give the Cue Card prompt. Wait for user. Once they speak, evaluate and return "transition_to_part": 3.
+   - Part 3: Ask 3-4 abstract questions. Then return "next_question": null to end.
+   - If a transition is needed, set the "transition_to_part" field in JSON.
+
+### OUTPUT JSON SCHEMA:
+{
+  "response": "Brief English response as examiner (<30 words)",
+  "transition_to_part": number | null,
+  "evaluation_metadata": { ... },
+  ...
+}
+Respond ONLY with raw JSON.`;
 
     const aiRes = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
       messages: [
@@ -210,25 +281,71 @@ speakingRouter.post('/session/turn', async (c) => {
         ...context.conversationHistory,
         { role: 'user', content: transcript }
       ],
-      max_tokens: 512
+      max_tokens: 1024
     });
 
-    const feedback = cleanAndParseJSON(aiRes.response || '{}') || {
-      response: "Thank you for your answer. Let's move on.",
-      feedback: "Câu trả lời của bạn đã được ghi nhận.",
-      band_estimate: 6.0,
-      fluency: 6.0, lexicalResource: 6.0,
-      grammaticalRange: 6.0, pronunciation: 6.0,
+    const parsedRes = cleanAndParseJSON(aiRes.response || '{}');
+    
+    // Logic: Handle Transition if AI requested
+    let transitionTo = parsedRes.transition_to_part;
+    if (transitionTo && context.partsList.includes(transitionTo)) {
+      context.currentPartIndex = context.partsList.indexOf(transitionTo);
+      context.partTurnCount = 0;
+      
+      // Update DB with new part
+      await db.update(speakingSessions)
+        .set({ part: transitionTo })
+        .where(eq(speakingSessions.id, sessionId))
+        .run();
+    }
+    
+    // Tính band thực từ transcript để clamping (phòng hờ AI hallucination)
+    const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length;
+    let fallbackBand = 1.0;
+    if (wordCount < 10) fallbackBand = 2.0;
+    else if (wordCount < 25) fallbackBand = 4.0;
+    else if (wordCount < 50) fallbackBand = 5.5;
+    else fallbackBand = 6.5;
+
+    const feedback = parsedRes || {
+      response: "Thank you for your answer.",
+      feedback_vi: { strengths: "N/A", weaknesses: "Câu trả lời quá ngắn", action_plan: "Hãy nói dài hơn" },
+      band_estimate: fallbackBand,
+      fluency: fallbackBand,
+      lexicalResource: fallbackBand,
+      grammaticalRange: fallbackBand,
+      pronunciation: fallbackBand,
       correction: null,
       next_question: null
     };
     
+    // UI/DB Compatibility Mapping:
+    // Nếu AI dùng schema mới, ta map feedback_vi.weaknesses vào trường 'feedback' cũ để không lỗi UI
+    if (feedback.feedback_vi) {
+      (feedback as any).feedback = `${feedback.feedback_vi.weaknesses}. ${feedback.feedback_vi.action_plan}`;
+    }
+
+    const maxAllowedBand = wordCount < 12 ? 2.5
+      : wordCount < 25 ? 4.5
+      : wordCount < 40 ? 5.5
+      : wordCount < 60 ? 7.0
+      : 9.0;
+
+    const roundToHalf = (num: number) => Math.round(num * 2) / 2;
+
+    feedback.band_estimate = roundToHalf(Math.min(feedback.band_estimate ?? fallbackBand, maxAllowedBand));
+    feedback.fluency = roundToHalf(Math.min(feedback.fluency ?? feedback.band_estimate, maxAllowedBand));
+    feedback.lexicalResource = roundToHalf(Math.min(feedback.lexicalResource ?? feedback.band_estimate, maxAllowedBand));
+    feedback.grammaticalRange = roundToHalf(Math.min(feedback.grammaticalRange ?? feedback.band_estimate, maxAllowedBand));
+    feedback.pronunciation = roundToHalf(Math.min(feedback.pronunciation ?? feedback.band_estimate, maxAllowedBand));
+
     context.conversationHistory.push({ role: 'user', content: transcript });
     context.conversationHistory.push({ role: 'assistant', content: feedback.response || '' });
     if (context.conversationHistory.length > 10) {
       context.conversationHistory = context.conversationHistory.slice(-10);
     }
     context.turnCount += 1;
+    context.partTurnCount += 1;
     if (feedback.band_estimate) {
       context.bandScores.push(feedback.band_estimate);
     }
@@ -248,7 +365,7 @@ speakingRouter.post('/session/turn', async (c) => {
       .where(eq(speakingSessions.id, sessionId))
       .run();
 
-    return c.json({ success: true, data: { transcript, ...feedback } });
+    return c.json({ success: true, data: { transcript, transition_to_part: feedback.transition_to_part, ...feedback } });
   } catch (err: any) {
     console.error('Turn error:', err.message, err.stack);
     return c.json({ success: false, error: err.message }, 500);
@@ -261,95 +378,82 @@ speakingRouter.post('/session/end', async (c) => {
     const { sessionId } = await c.req.json();
     const db = drizzle(c.env.DB);
 
-    const turns = await db.select().from(speakingTurns).where(eq(speakingTurns.session_id, sessionId)).all();
-    const session = await db.select().from(speakingSessions).where(eq(speakingSessions.id, sessionId)).get();
-    const avgBand = turns.length > 0 ? turns.reduce((acc, t) => acc + (t.band_estimate ?? 0), 0) / turns.length : 6.0;
-    const duration = session?.started_at
-      ? Math.round((Date.now() - new Date(session.started_at).getTime()) / 1000)
-      : 300;
+    const payload = c.get('jwtPayload') as any;
+    const userId = payload.sub;
 
-    const rawCtx = await c.env.CACHE.get(getKVKey(sessionId));
-    const context = rawCtx ? JSON.parse(rawCtx) : { personaId: 'james', topic: 'Speaking test', part: 1 };
+    // Lấy tier của user
+    const user = await db.select({ tier: users.tier }).from(users).where(eq(users.id, userId)).get();
+    const isPremium = user?.tier === 'premium';
 
-    const turnDetails = turns.map((t, i) => {
-      const ai = t.ai_response as Record<string, any> | null;
-      return `Turn ${i + 1}:
-  Transcript: "${t.transcript}"
-  Scores: overall=${t.band_estimate ?? 'N/A'}, fluency=${ai?.fluency ?? 'N/A'}, lexical=${ai?.lexicalResource ?? 'N/A'}, grammar=${ai?.grammaticalRange ?? 'N/A'}, pronunciation=${ai?.pronunciation ?? 'N/A'}`;
-    }).join('\n\n');
+    const reportAvailableAt = isPremium ? new Date() : new Date(Date.now() + SPEAKING_REPORT_DELAY_MS);
 
-    const DESCRIPTORS = IELTS_BAND_DESCRIPTORS;
-    const reportPrompt = `You are an IELTS Speaking examiner. Generate a consolidated speaking report.
+    if (!isPremium) {
+      if (c.env.SPEAKING_QUEUE) {
+        await c.env.SPEAKING_QUEUE.send({
+          sessionId,
+          userId,
+          isPremium,
+          reportAvailableAtStr: reportAvailableAt.toISOString()
+        });
+      } else {
+        console.warn('SPEAKING_QUEUE not bound, falling back to sync processing');
+        c.executionCtx.waitUntil(processSpeakingReport(c.env, sessionId, userId, isPremium, reportAvailableAt.toISOString()));
+      }
 
-  ${DESCRIPTORS}
+      await sendPushNotification(c.env.DB, userId, {
+        title: '🎤 Báo cáo Speaking đang được tổng hợp',
+        body: `Kết quả sẽ có trong mục Lịch sử sau ~5 phút.`,
+        data: { type: 'speaking_report_queued', session_id: sessionId },
+      });
 
-  Session info:
-  - Persona: ${context.personaId}
-  - Topic: "${context.topic}"
-  - Part: ${context.part}
-  - Duration: ${duration} seconds
-  - Total turns: ${turns.length}
+      return c.json({
+        success: true,
+        data: {
+          scoring_mode: 'deferred',
+          report_available_at: reportAvailableAt.toISOString(),
+          estimated_wait_minutes: 5,
+          message: 'Báo cáo đang được tổng hợp. Kết quả sẽ xuất hiện trong mục Lịch sử sau ~5 phút.',
+        },
+      });
+    }
 
-  Full conversation with per-turn scores:
-  ${turnDetails}
-
-  Analyze ALL turns against the IELTS band descriptors above.
-  Output a consolidated report with:
-  - averageBandEstimate: weighted overall band across all turns
-  - breakdown: { fluency, lexicalResource, grammaticalRange, pronunciation } — computed by analyzing EVERY turn's transcript against the criteria. Do NOT copy the same number to all 4; each must be independently assessed.
-  - topErrors: extract actual language errors from transcripts (grammar, word choice, etc.). Empty array only if truly error-free.
-  - nextSessionSuggestion: specific Vietnamese advice based on actual weaknesses observed
-
-  STRICT JSON output:
-  {
-    "sessionId": "${sessionId}",
-    "persona": "${context.personaId}",
-    "duration": ${duration},
-    "turnsCompleted": ${turns.length},
-    "averageBandEstimate": number,
-    "breakdown": { "fluency": number, "lexicalResource": number, "grammaticalRange": number, "pronunciation": number },
-    "topErrors": [{"type": "grammar|vocabulary|pronunciation", "example": "student's words", "correction": "corrected version"}],
-    "nextSessionSuggestion": "Tiếng Việt suggestion"
-  }`;
-
-    const aiRes = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-      messages: [{ role: 'user', content: reportPrompt }]
-    });
-
-    const avgFromTurns = (key: string): number => {
-      const vals = turns.map(t => (t.ai_response as Record<string, any> | null)?.[key]).filter(v => v != null) as number[];
-      return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : avgBand;
-    };
-
-    const finalReport = cleanAndParseJSON(aiRes.response || '{}') || {
-      sessionId, persona: context.personaId, duration, turnsCompleted: turns.length,
-      averageBandEstimate: avgBand,
-      breakdown: {
-        fluency: avgFromTurns('fluency'),
-        lexicalResource: avgFromTurns('lexicalResource'),
-        grammaticalRange: avgFromTurns('grammaticalRange'),
-        pronunciation: avgFromTurns('pronunciation'),
-      },
-      topErrors: [], nextSessionSuggestion: "Cố gắng luyện tập thêm nhé!"
-    };
-
-    await db.update(speakingSessions)
-      .set({
-        status: 'completed',
-        average_band: avgBand,
-        report: JSON.stringify(finalReport),
-        ended_at: new Date()
-      })
-      .where(eq(speakingSessions.id, sessionId))
-      .run();
-
-    await c.env.CACHE.delete(getKVKey(sessionId));
-
-    return c.json({ success: true, data: { report: finalReport } });
+    // Premium: trả về full report ngay
+    const finalReport = await processSpeakingReport(c.env, sessionId, userId, isPremium, reportAvailableAt.toISOString());
+    return c.json({ success: true, data: { report: finalReport, scoring_mode: 'immediate' } });
   } catch (err: any) {
     console.error('End session error:', err.message, err.stack);
     return c.json({ success: false, error: err.message }, 500);
   }
+});
+
+// 5. POST /sessions/:session_id/unlock — fake ads unlock cho free user
+speakingRouter.post('/sessions/:session_id/unlock', async (c) => {
+  const sessionId = c.req.param('session_id');
+  const payload = c.get('jwtPayload') as any;
+  const userId = payload.sub;
+  const db = drizzle(c.env.DB);
+
+  const session = await db.select()
+    .from(speakingSessions)
+    .where(eq(speakingSessions.id, sessionId))
+    .get();
+
+  if (!session || session.user_id !== userId) {
+    return c.json({ success: false, error: 'Session not found' }, 404);
+  }
+  if (session.status !== 'completed') {
+    return c.json({ success: false, error: 'Session not completed yet' }, 400);
+  }
+  if (session.report_unlocked) {
+    return c.json({ success: true, data: { already_unlocked: true, report: session.report } });
+  }
+
+  await db.update(speakingSessions)
+    .set({ report_unlocked: true })
+    .where(eq(speakingSessions.id, sessionId))
+    .run();
+
+  return c.json({ success: true, data: { unlocked: true, report: session.report } });
 });
 
 // 4. GET /sessions
@@ -365,6 +469,28 @@ speakingRouter.get('/sessions', async (c) => {
     .all();
 
   return c.json({ success: true, data: { sessions } });
+});
+
+// GET /sessions/:id
+speakingRouter.get('/sessions/:id', async (c) => {
+  const sessionId = c.req.param('id');
+  const payload = c.get('jwtPayload') as any;
+  const userId = payload.sub;
+  const db = drizzle(c.env.DB);
+
+  const session = await db.select()
+    .from(speakingSessions)
+    .where(and(eq(speakingSessions.id, sessionId), eq(speakingSessions.user_id, userId)))
+    .get();
+
+  if (!session) {
+    return c.json({ success: false, error: 'Session not found' }, 404);
+  }
+
+  // Parse report if it's a string
+  const report = session.report ? (typeof session.report === 'string' ? JSON.parse(session.report) : session.report) : null;
+
+  return c.json({ success: true, data: { ...session, report } });
 });
 
 export default speakingRouter;

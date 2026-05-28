@@ -133,98 +133,102 @@ export class AIService {
   }
 
   /**
-   * Chấm điểm bài thi Writing dựa trên tiêu chí IELTS
+   * Chấm điểm bài thi Writing dựa trên tiêu chí IELTS chuyên sâu
    */
   async gradeWriting(taskPrompt: string, studentAnswer: string, persona: string = 'james') {
-    let personaInstruction = "You are a professional IELTS Examiner.";
-    
-    if (persona === 'sarah') {
-      personaInstruction = "You are a hilarious and witty IELTS Examiner. Crack a few light-hearted jokes and use humor while giving your feedback, but still provide accurate grading.";
-    } else if (persona === 'dr_chen') {
-      personaInstruction = "You are a very strict, traditional, and no-nonsense IELTS examiner. Point out mistakes directly and be firm in your feedback.";
-    } else if (persona === 'emily') {
-      personaInstruction = "You are an incredibly supportive, kind, and encouraging IELTS tutor. Always start with praise, highlight the student's strengths, and gently point out areas for improvement.";
-    }
+    let personaInstruction = "You are a Senior IELTS Writing Examiner with 20 years of experience.";
+    if (persona === 'sarah') personaInstruction += " Style: Direct, high-energy, and extremely strict.";
+    else if (persona === 'dr_chen') personaInstruction += " Style: Intellectual, academic, and focuses heavily on lexical precision.";
+    else if (persona === 'emily') personaInstruction += " Style: Professional but provides detailed guidance for improvement.";
 
     const prompt = `
-      ${personaInstruction} Grade the following student response based on the official IELTS Writing Task criteria.
-      
+      ${personaInstruction}
+      Your task is to evaluate a candidate's essay based strictly on the official IELTS Writing Band Descriptors.
+
       TASK PROMPT:
       ${taskPrompt}
       
-      STUDENT RESPONSE:
+      CANDIDATE SUBMISSION:
       ${studentAnswer}
-      
-      Please provide the response in STRICT JSON format. Do not include any conversational text or markdown code blocks.
-      
-      JSON Structure:
+
+      CRITICAL RULES FOR EVALUATION:
+      1. Word Count Check: If Task 1 < 150 words or Task 2 < 250 words, apply a strict penalty to the TA/TR score (Max 5.0 for TA/TR).
+      2. Task 1 Overview: If it's Task 1 and lacks a clear overview, TA score CANNOT exceed 5.0.
+      3. Task 2 Position: If it's Task 2 and lacks a clear position throughout, TR score CANNOT exceed 5.5.
+      4. Error-Free Ratio: Calculate (Error-free sentences / Total sentences). If < 60%, GRA score CANNOT exceed 5.5.
+      5. Half-band scoring: ALL scores must be multiples of 0.5 (e.g., 6.5, 7.0).
+
+      OUTPUT JSON SCHEMA:
       {
+        "word_count": number,
         "overall_score": number,
         "criteria_scores": {
-            "task_response": number,
-            "coherence_cohesion": number,
-            "lexical_resource": number,
-            "grammar_accuracy": number
+            "task_response": { "band": number, "justification_en": "string" },
+            "coherence_cohesion": { "band": number, "justification_en": "string" },
+            "lexical_resource": { "band": number, "justification_en": "string" },
+            "grammar_accuracy": { "band": number, "justification_en": "string", "error_ratio": number }
         },
-        "feedback": "string (detailed paragraph in Vietnamese)",
-        "suggested_version": "string (Band 8+ version)"
+        "detailed_errors": [
+          { "original": "string", "corrected": "string", "error_type": "string", "explanation_vi": "string" }
+        ],
+        "user_feedback_vi": {
+          "strengths": "string",
+          "weaknesses": "string",
+          "action_plan": "string"
+        },
+        "sample_rewrite_segments": [
+          { "original_segment": "string", "improved_segment": "string", "reason_vi": "string" }
+        ],
+        "suggested_version": "string (Band 8.5+ full essay version)"
       }
+      Respond ONLY with raw JSON.
     `;
 
     try {
       const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct', {
         messages: [
-          { role: 'system', content: 'You are an IELTS Writing Scorer. Output ONLY valid JSON.' },
+          { role: 'system', content: 'You are an Expert IELTS Writing Scorer. Output ONLY valid JSON.' },
           { role: 'user', content: prompt }
         ],
-        max_tokens: 2048
+        max_tokens: 3072
       });
 
       let jsonStr = response.response || "";
-      
-      // 1. Trích xuất khối JSON
       const startIdx = jsonStr.indexOf('{');
       const endIdx = jsonStr.lastIndexOf('}');
       if (startIdx !== -1 && endIdx !== -1) {
         jsonStr = jsonStr.substring(startIdx, endIdx + 1);
       }
-
-      // 2. Vệ sinh JSON: Xử lý xuống dòng và trailing commas
       let cleaned = this.cleanJsonString(jsonStr);
+
+      const roundToHalf = (num: number) => Math.round(num * 2) / 2;
 
       try {
         const parsed = JSON.parse(cleaned);
-        // Đảm bảo các trường bắt buộc tồn tại
-        return {
-          overall_score: parsed.overall_score || 0,
-          criteria_scores: parsed.criteria_scores || {},
-          feedback: parsed.feedback || "No feedback provided",
-          suggested_version: parsed.suggested_version || ""
-        };
-      } catch (innerErr) {
-        console.error('JSON Parse failed after cleaning. Position:', (innerErr as any).message);
-        console.log('Malformed JSON snippet:', cleaned.substring(0, 500));
         
-        // 4. Fallback: Dùng Regex để cứu vãn dữ liệu nếu JSON hỏng nặng
-        const scoreMatch = cleaned.match(/"overall_score":\s*([\d.]+)/);
-        const feedbackMatch = cleaned.match(/"feedback":\s*"((?:[^"\\]|\\.)*)"/);
-        const suggestedMatch = cleaned.match(/"suggested_version":\s*"((?:[^"\\]|\\.)*)"/);
-        
-        return {
-          overall_score: scoreMatch ? parseFloat(scoreMatch[1]) : 0,
-          feedback: feedbackMatch ? feedbackMatch[1].replace(/\\n/g, '\n') : "AI trả về định dạng không chuẩn, vui lòng thử lại.",
-          criteria_scores: {},
-          suggested_version: suggestedMatch ? suggestedMatch[1].replace(/\\n/g, '\n') : ""
+        // Map và làm tròn điểm
+        const result = {
+          overall_score: roundToHalf(parsed.overall_score || 0),
+          criteria_scores: {
+            task_response: roundToHalf(parsed.criteria_scores?.task_response?.band || 0),
+            coherence_cohesion: roundToHalf(parsed.criteria_scores?.coherence_cohesion?.band || 0),
+            lexical_resource: roundToHalf(parsed.criteria_scores?.lexical_resource?.band || 0),
+            grammar_accuracy: roundToHalf(parsed.criteria_scores?.grammar_accuracy?.band || 0)
+          },
+          feedback: `${parsed.user_feedback_vi?.weaknesses || ""}. ${parsed.user_feedback_vi?.action_plan || ""}`,
+          detailed_errors: parsed.detailed_errors || [],
+          sample_rewrite_segments: parsed.sample_rewrite_segments || [],
+          suggested_version: parsed.suggested_version || "",
+          word_count: parsed.word_count || studentAnswer.trim().split(/\s+/).length
         };
+        return result;
+      } catch (e) {
+        console.error('Writing JSON Parse Error:', e);
+        throw e;
       }
-
     } catch (err) {
       console.error('Writing Scoring Error:', err);
-      return {
-        overall_score: 0,
-        feedback: "Hệ thống đang gặp sự cố khi chấm điểm. Vui lòng thử lại sau.",
-        criteria_scores: {}
-      };
+      return { overall_score: 0, feedback: "Hệ thống đang bận, vui lòng thử lại.", criteria_scores: {} };
     }
   }
 

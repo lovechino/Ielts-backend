@@ -25,7 +25,22 @@ export class LessonService {
       conditions.push(eq(lessons.test_type, testType as any));
     }
     
-    return await this.db.select().from(lessons).where(and(...conditions));
+    // Select specific columns to be safe and efficient
+    return await this.db.select({
+      id: lessons.id,
+      course_id: lessons.course_id,
+      title: lessons.title,
+      order: lessons.order,
+      lesson_type: lessons.lesson_type,
+      pdf_url: lessons.pdf_url,
+      is_test: lessons.is_test,
+      test_type: lessons.test_type,
+      time_limit: lessons.time_limit,
+      speaking_part: lessons.speaking_part,
+    })
+    .from(lessons)
+    .where(and(...conditions))
+    .all();
   }
 
   async getById(lessonId: string) {
@@ -61,19 +76,51 @@ export class LessonService {
   }
 
   async update(lessonId: string, data: any) {
-    const updateData = {
+    // Defense against corrupted JSON fields
+    let lessonParts = data.lesson_parts !== undefined ? data.lesson_parts : (data.lessonParts !== undefined ? data.lessonParts : undefined);
+    if (typeof lessonParts === 'string') {
+      try {
+        if (lessonParts === 'lesson_parts') {
+          lessonParts = null;
+        } else {
+          lessonParts = JSON.parse(lessonParts);
+        }
+      } catch {
+        lessonParts = null;
+      }
+    }
+
+    let metadata = data.metadata;
+    if (typeof metadata === 'string') {
+      try {
+        if (metadata === 'metadata') {
+          metadata = null;
+        } else {
+          metadata = JSON.parse(metadata);
+        }
+      } catch {
+        metadata = null;
+      }
+    }
+
+    const updateData: any = {
       ...data,
       course_id: data.course_id || data.courseId,
       lesson_type: data.lesson_type || data.lessonType,
       pdf_url: data.pdf_url || data.pdfUrl,
-      speaking_part: data.speaking_part !== undefined ? data.speaking_part : (data.speakingPart !== undefined ? data.speakingPart : null),
+      speaking_part: data.speaking_part !== undefined ? data.speaking_part : (data.speakingPart !== undefined ? data.speakingPart : undefined),
     };
+
+    if (lessonParts !== undefined) updateData.lesson_parts = lessonParts;
+    if (metadata !== undefined) updateData.metadata = metadata;
+
     // Clean up
-    delete (updateData as any).id;
-    delete (updateData as any).courseId;
-    delete (updateData as any).lessonType;
-    delete (updateData as any).pdfUrl;
-    delete (updateData as any).speakingPart;
+    delete updateData.id;
+    delete updateData.courseId;
+    delete updateData.lessonType;
+    delete updateData.pdfUrl;
+    delete updateData.speakingPart;
+    delete updateData.lessonParts;
 
     const result = await this.db.update(lessons)
       .set(updateData)
@@ -83,6 +130,33 @@ export class LessonService {
   }
 
   private mapLessonData(data: any) {
+    // Defense against corrupted JSON fields
+    let lessonParts = data.lesson_parts || data.lessonParts || null;
+    if (typeof lessonParts === 'string') {
+      try {
+        if (lessonParts === 'lesson_parts') {
+          lessonParts = null;
+        } else {
+          lessonParts = JSON.parse(lessonParts);
+        }
+      } catch {
+        lessonParts = null;
+      }
+    }
+
+    let metadata = data.metadata || null;
+    if (typeof metadata === 'string') {
+      try {
+        if (metadata === 'metadata') {
+          metadata = null;
+        } else {
+          metadata = JSON.parse(metadata);
+        }
+      } catch {
+        metadata = null;
+      }
+    }
+
     const mapped = {
       id: data.id || crypto.randomUUID(),
       course_id: data.course_id || data.courseId,
@@ -95,6 +169,8 @@ export class LessonService {
       test_type: data.test_type || 'practice',
       time_limit: data.time_limit || 60,
       speaking_part: data.speaking_part || data.speakingPart || null,
+      lesson_parts: lessonParts,
+      metadata: metadata,
     };
     return mapped;
   }
