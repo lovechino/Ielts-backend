@@ -60,9 +60,9 @@ export const lessons = sqliteTable('lessons', {
   time_limit: integer('time_limit').default(60), // in minutes
   is_test: integer('is_test', { mode: 'boolean' }).default(false),
   test_type: text('test_type'), // mini, full, practice
-  speaking_part: integer('speaking_part'), // 1 | 2 | 3 (legacy single-part)
-  lesson_parts: text('lesson_parts', { mode: 'json' }), // Array of numbers: [1, 2, 3] or [1, 2] (tasks)
-  metadata: text('metadata', { mode: 'json' }), // Flexible config for any skill
+  speaking_part: integer('speaking_part'), // LEGACY: single-part (1|2|3). Use lesson_parts for new lessons.
+  lesson_parts: text('lesson_parts', { mode: 'json' }), // Unified parts array for ALL skills: [1,2,3] (speaking), [1,2] (writing tasks), [1,3] (reading passages), etc.
+  metadata: text('metadata', { mode: 'json' }), // Flexible extra config (e.g. audio_url for listening). NOT used for parts/tasks.
 });
 
 export const passages = sqliteTable('passages', {
@@ -173,6 +173,7 @@ export const courseEnrollments = sqliteTable('course_enrollments', {
 export const speakingSessions = sqliteTable('speaking_sessions', {
   id: uuid('id'),
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  lesson_id: text('lesson_id').references(() => lessons.id, { onDelete: 'set null' }), // null for free-practice sessions
   persona_id: text('persona_id').notNull(), // 'james' | 'emily' | 'dr_chen' | 'sarah'
   topic: text('topic').notNull(),
   part: integer('part').notNull(),          // 1 | 2 | 3

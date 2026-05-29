@@ -186,6 +186,7 @@ MANDATE:
     await db.insert(speakingSessions).values({
       id: sessionId,
       user_id: userId,
+      lesson_id: lesson_id || null,
       persona_id: personaId,
       topic: sessionTopic,
       part: currentPart,
@@ -285,20 +286,7 @@ Respond ONLY with raw JSON.`;
     });
 
     const parsedRes = cleanAndParseJSON(aiRes.response || '{}');
-    
-    // Logic: Handle Transition if AI requested
-    let transitionTo = parsedRes.transition_to_part;
-    if (transitionTo && context.partsList.includes(transitionTo)) {
-      context.currentPartIndex = context.partsList.indexOf(transitionTo);
-      context.partTurnCount = 0;
-      
-      // Update DB with new part
-      await db.update(speakingSessions)
-        .set({ part: transitionTo })
-        .where(eq(speakingSessions.id, sessionId))
-        .run();
-    }
-    
+
     // Tính band thực từ transcript để clamping (phòng hờ AI hallucination)
     const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length;
     let fallbackBand = 1.0;
@@ -307,7 +295,9 @@ Respond ONLY with raw JSON.`;
     else if (wordCount < 50) fallbackBand = 5.5;
     else fallbackBand = 6.5;
 
-    const feedback = parsedRes || {
+    // Build feedback — use parsedRes if valid, otherwise fall back to safe defaults
+    // IMPORTANT: must be done BEFORE reading any field from parsedRes (it may be null)
+    const feedback = parsedRes ?? {
       response: "Thank you for your answer.",
       feedback_vi: { strengths: "N/A", weaknesses: "Câu trả lời quá ngắn", action_plan: "Hãy nói dài hơn" },
       band_estimate: fallbackBand,
@@ -316,8 +306,22 @@ Respond ONLY with raw JSON.`;
       grammaticalRange: fallbackBand,
       pronunciation: fallbackBand,
       correction: null,
-      next_question: null
+      next_question: null,
+      transition_to_part: null,
     };
+
+    // Logic: Handle Transition if AI requested
+    const transitionTo = feedback.transition_to_part ?? null;
+    if (transitionTo && context.partsList.includes(transitionTo)) {
+      context.currentPartIndex = context.partsList.indexOf(transitionTo);
+      context.partTurnCount = 0;
+
+      // Update DB with new part
+      await db.update(speakingSessions)
+        .set({ part: transitionTo })
+        .where(eq(speakingSessions.id, sessionId))
+        .run();
+    }
     
     // UI/DB Compatibility Mapping:
     // Nếu AI dùng schema mới, ta map feedback_vi.weaknesses vào trường 'feedback' cũ để không lỗi UI

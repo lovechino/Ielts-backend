@@ -15,6 +15,8 @@ export type Bindings = {
   JWT_SECRET: string;
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
+  GOOGLE_ANDROID_CLIENT_ID?: string;
+  GOOGLE_IOS_CLIENT_ID?: string;
   FRONTEND_URL: string;
   RESEND_API_KEY?: string;
   ENABLE_ADMIN?: string;

@@ -59,11 +59,26 @@ progressRouter.get('/history', async (c) => {
     .limit(limit + offset) // Lấy dư để merge
     .all();
 
-  // 2. Fetch from speakingSessions
+  // 2. Fetch from speakingSessions — left join lessons to get proper title
   // Speaking sessions don't have mini/full/practice type in DB, but we consider them 'mini' tests
   const speakingRows = (type && type !== 'mini') ? [] : await db
-    .select()
+    .select({
+      id: speakingSessions.id,
+      user_id: speakingSessions.user_id,
+      lesson_id: speakingSessions.lesson_id,
+      topic: speakingSessions.topic,
+      part: speakingSessions.part,
+      status: speakingSessions.status,
+      turn_count: speakingSessions.turn_count,
+      average_band: speakingSessions.average_band,
+      report_unlocked: speakingSessions.report_unlocked,
+      report_available_at: speakingSessions.report_available_at,
+      ended_at: speakingSessions.ended_at,
+      // lesson title — null for free-practice sessions (no lesson_id)
+      lesson_title: lessons.title,
+    })
     .from(speakingSessions)
+    .leftJoin(lessons, eq(lessons.id, speakingSessions.lesson_id))
     .where(and(
       eq(speakingSessions.user_id, userId),
       eq(speakingSessions.status, 'completed')
@@ -103,19 +118,24 @@ progressRouter.get('/history', async (c) => {
     }),
     ...speakingRows.map((s) => {
       const unlocked = isPremium || !!s.report_unlocked;
+      // For old sessions without lesson_id, topic may contain raw cue card text (multi-line).
+      // Use lesson title if available; otherwise take only the first line of the topic.
+      const rawTopic = s.topic || 'Speaking Practice';
+      const firstLine = rawTopic.split('\n')[0].trim();
+      const displayTitle = s.lesson_title ?? firstLine;
       return {
         id: s.id,
         progress_id: s.id,
         kind: 'speaking',
-        lesson_id: null,
-        lesson_title: s.topic,
+        lesson_id: s.lesson_id ?? null,
+        lesson_title: displayTitle,
         lesson_type: 'speaking',
         test_type: 'mini',
         score: s.average_band,
         total_questions: s.turn_count ?? 0,
         correct_answers: 0,
         accuracy_pct: 0,
-        scoring_status: 'completed', // Speaking only shows in history if completed
+        scoring_status: 'completed',
         full_result_unlocked: unlocked,
         needs_unlock: !isPremium && !s.report_unlocked,
         result_available_at: s.report_available_at ? new Date(s.report_available_at).getTime() / 1000 : null,

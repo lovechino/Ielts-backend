@@ -120,9 +120,18 @@ googleAuth.post('/', async (c) => {
     const tokens = await tokenResponse.json() as Record<string, any>;
     const payload = decodeIdToken(tokens.id_token);
 
-    if (payload.aud !== clientId) {
+    // Accept multiple audiences for cross-client support (Web, Android, iOS)
+    const allowedAudiences = [
+      c.env.GOOGLE_CLIENT_ID,
+      c.env.GOOGLE_ANDROID_CLIENT_ID,
+      c.env.GOOGLE_IOS_CLIENT_ID,
+    ].filter(Boolean);
+
+    if (!allowedAudiences.includes(payload.aud)) {
+      console.error(`Token audience mismatch. Expected one of: ${allowedAudiences.join(', ')}. Got: ${payload.aud}`);
       return c.json({ success: false, error: 'Token audience mismatch' }, 401);
     }
+
     if (payload.iss !== 'https://accounts.google.com' && payload.iss !== 'accounts.google.com') {
       return c.json({ success: false, error: 'Invalid token issuer' }, 401);
     }
@@ -177,7 +186,10 @@ googleAuth.get('/', async (c) => {
   const redirectUri = `${url.origin}/api/v1/auth/google/callback`;
   const state = crypto.randomUUID();
 
-  const clientId = c.env.GOOGLE_CLIENT_ID || '109247400665-t0ck01im9o7neqkcms0nclkn2s674089.apps.googleusercontent.com';
+  const clientId = c.env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    return c.json({ success: false, error: 'GOOGLE_CLIENT_ID not configured' }, 500);
+  }
 
   const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${new URLSearchParams({
     client_id: clientId,
@@ -234,7 +246,13 @@ googleAuth.get('/callback', async (c) => {
     const tokens = await tokenResponse.json() as Record<string, any>;
     const payload = decodeIdToken(tokens.id_token);
 
-    if (payload.aud !== clientId) {
+    const allowedAudiences = [
+      c.env.GOOGLE_CLIENT_ID,
+      c.env.GOOGLE_ANDROID_CLIENT_ID,
+      c.env.GOOGLE_IOS_CLIENT_ID,
+    ].filter(Boolean);
+
+    if (!allowedAudiences.includes(payload.aud)) {
       return c.json({ success: false, error: 'Token audience mismatch' }, 401);
     }
 
