@@ -66,10 +66,10 @@ app.get('/health', (c) => {
   });
 });
 
-app.route('/api/v1', apiRouter);
-
-// Global rate limit cho toàn bộ /api/v1 — chặn abuse rõ ràng
+// Global rate limit cho toàn bộ /api/v1 — phải đăng ký TRƯỚC route để Hono áp dụng đúng
 app.use('/api/v1/*', generalRateLimit);
+
+app.route('/api/v1', apiRouter);
 
 // Cron: daily streak reset at 0h UTC
 export default {

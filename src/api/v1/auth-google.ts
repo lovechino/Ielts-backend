@@ -152,20 +152,33 @@ googleAuth.post('/', async (c) => {
       return c.json({ success: false, error: 'User not found' }, 404);
     }
 
-    const token = await sign(
+    // Access token ngắn hạn (15 phút) — giống email/password auth
+    const accessToken = await sign(
       {
         sub: user.id,
         email: user.email,
         role: user.role,
-        exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24,
+        exp: Math.floor(Date.now() / 1000) + 60 * 15,
       },
       c.env.JWT_SECRET
     );
 
+    // Refresh token dài hạn (30 ngày) — lưu vào DB để hỗ trợ silent refresh
+    const { refreshTokens } = await import('../../db/schema');
+    const refreshTokenValue = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    await db.insert(refreshTokens).values({
+      id: crypto.randomUUID(),
+      user_id: user.id,
+      token: refreshTokenValue,
+      expires_at: expiresAt,
+    }).run();
+
     return c.json({
       success: true,
       data: {
-        token,
+        token: accessToken,
+        refresh_token: refreshTokenValue,
         user: {
           id: user.id,
           email: user.email,
@@ -266,21 +279,32 @@ googleAuth.get('/callback', async (c) => {
 
     const user = await db.select().from(users).where(eq(users.id, userId)).get();
 
-    const token = await sign(
+    const accessToken = await sign(
       {
         sub: user!.id,
         email: user!.email,
         role: user!.role,
-        exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24,
+        exp: Math.floor(Date.now() / 1000) + 60 * 15,
       },
       c.env.JWT_SECRET
     );
 
-    // Bỏ qua c.env.FRONTEND_URL vì nó đang dính cổng 3000 của dự án NextJS cũ trong wrangler.jsonc
-    const frontendUrl = 'http://localhost:8081';
+    // Refresh token dài hạn (30 ngày)
+    const { refreshTokens } = await import('../../db/schema');
+    const refreshTokenValue = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    await db.insert(refreshTokens).values({
+      id: crypto.randomUUID(),
+      user_id: user!.id,
+      token: refreshTokenValue,
+      expires_at: expiresAt,
+    }).run();
+
+    // Dùng FRONTEND_URL từ env, fallback về localhost:8081 cho dev
+    const frontendUrl = c.env.FRONTEND_URL || 'http://localhost:8081';
 
     return buildRedirectRes(
-      `${frontendUrl}/auth/callback?token=${encodeURIComponent(token)}`,
+      `${frontendUrl}/auth/callback?token=${encodeURIComponent(accessToken)}&refresh_token=${encodeURIComponent(refreshTokenValue)}`,
       { name: 'google_oauth_state', value: '', maxAge: 0 }
     );
   } catch (err: any) {

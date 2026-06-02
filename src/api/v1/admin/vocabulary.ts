@@ -62,6 +62,69 @@ adminVocabRouter.post('/bulk-import', async (c) => {
   return c.json({ success: true, data: result });
 });
 
+// GET /vocabulary/export-sql — xuất toàn bộ vocabulary thành SQL INSERT statements
+// để admin đóng gói vào dictionary.db
+adminVocabRouter.get('/export-sql', async (c) => {
+  const vocab_course_id = c.req.query('vocab_course_id');
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const words = await service.getAll({ vocab_course_id: vocab_course_id || undefined, limit: 200000 });
+
+  const lines: string[] = [
+    '-- IELTS Dictionary Export',
+    `-- Generated: ${new Date().toISOString()}`,
+    `-- Total words: ${words.length}`,
+    '',
+    'BEGIN TRANSACTION;',
+    '',
+    'CREATE TABLE IF NOT EXISTS vocabulary (',
+    '  id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    '  word TEXT NOT NULL UNIQUE,',
+    '  definition TEXT,',
+    '  definition_vi TEXT,',
+    '  example TEXT,',
+    '  example_vi TEXT,',
+    '  topic TEXT,',
+    '  pronunciation TEXT,',
+    '  part_of_speech TEXT,',
+    '  level TEXT',
+    ');',
+    '',
+    'CREATE VIRTUAL TABLE IF NOT EXISTS vocab_fts USING fts5(',
+    '  word,',
+    "  content='vocabulary',",
+    "  content_rowid='id'",
+    ');',
+    '',
+  ];
+
+  // Batch INSERT statements (500 per batch for performance)
+  const BATCH = 500;
+  for (let i = 0; i < words.length; i += BATCH) {
+    const batch = words.slice(i, i + BATCH);
+    const values = batch.map(w => {
+      const esc = (s: string | null | undefined) =>
+        s == null ? 'NULL' : `'${String(s).replace(/'/g, "''")}'`;
+      return `(${esc(w.word)},${esc(w.definition)},${esc(w.definition_vi)},${esc(w.example)},${esc(w.example_vi)},${esc(w.topic)},${esc(w.pronunciation)},${esc(w.part_of_speech)},${esc(w.level)})`;
+    }).join(',\n  ');
+    lines.push(`INSERT OR IGNORE INTO vocabulary (word,definition,definition_vi,example,example_vi,topic,pronunciation,part_of_speech,level) VALUES`);
+    lines.push(`  ${values};`);
+    lines.push('');
+  }
+
+  lines.push('-- Rebuild FTS index');
+  lines.push("INSERT INTO vocab_fts(vocab_fts) VALUES('rebuild');");
+  lines.push('');
+  lines.push('COMMIT;');
+
+  const sql = lines.join('\n');
+  return new Response(sql, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Disposition': `attachment; filename="dictionary_${new Date().toISOString().slice(0,10)}.sql"`,
+    },
+  });
+});
+
 adminVocabRouter.post('/', async (c) => {
   const body = await c.req.json();
   const service = new VocabularyService(c.env.DB, c.env.CACHE);

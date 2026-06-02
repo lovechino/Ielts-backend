@@ -153,6 +153,28 @@ progressRouter.get('/history', async (c) => {
   return c.json({ success: true, data: result });
 });
 
+// GET /api/v1/progress/by-id/:progress_id — lấy kết quả theo progress_id cụ thể (dùng cho history detail)
+progressRouter.get('/by-id/:progress_id', async (c) => {
+  const progressId = c.req.param('progress_id');
+  const payload = c.get('jwtPayload') as { sub: string };
+  const userId = payload.sub;
+  const db = drizzle(c.env.DB);
+
+  const progress = await db.select()
+    .from(userProgress)
+    .where(and(eq(userProgress.id, progressId), eq(userProgress.user_id, userId)))
+    .get();
+
+  if (!progress) {
+    return c.json({ success: false, error: 'Progress not found' }, 404);
+  }
+
+  const service = new ProgressService(c.env.DB);
+  const fullProgress = await service.getProgress(userId, progress.lesson_id);
+
+  return c.json({ success: true, data: fullProgress ?? null });
+});
+
 // GET /api/v1/progress/:lesson_id
 progressRouter.get('/:lesson_id', async (c) => {
   const lessonId = c.req.param('lesson_id');

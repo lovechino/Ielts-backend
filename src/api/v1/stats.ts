@@ -130,6 +130,35 @@ statsRouter.get('/streak', async (c) => {
   return c.json({ success: true, data: streak });
 });
 
+// Route: POST /api/v1/stats/rewards - Update user coins and XP from games
+statsRouter.post('/rewards', async (c) => {
+  const payload = c.get('jwtPayload') as { sub: string };
+  const userId = payload.sub;
+  const db = drizzle(c.env.DB);
+  const body = (await c.req.json().catch(() => ({}))) as { xp: number; coins: number };
+
+  if (typeof body.xp !== 'number' || typeof body.coins !== 'number') {
+    return c.json({ success: false, error: { code: 'INVALID_INPUT', message: 'XP and Coins must be numbers' } }, 422);
+  }
+
+  // Update user stats with atomic increment
+  const result = await db.update(users)
+    .set({
+      xp: sql`${users.xp} + ${body.xp}`,
+      coins: sql`${users.coins} + ${body.coins}`,
+      updated_at: sql`(strftime('%s', 'now'))`
+    })
+    .where(eq(users.id, userId))
+    .returning({
+      new_xp: users.xp,
+      new_coins: users.coins,
+      level: users.level
+    })
+    .get();
+
+  return c.json({ success: true, data: result });
+});
+
 // ─── Leaderboard helpers ──────────────────────────────────────────────────────
 
 const LEADERBOARD_CACHE_TTL = 300; // 5 phút

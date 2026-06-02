@@ -1,1 +1,0 @@
-ALTER TABLE `vocab_courses` ADD `structure_type` text DEFAULT 'cefr_levels' NOT NULL;

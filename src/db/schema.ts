@@ -14,12 +14,17 @@ export const users = sqliteTable('users', {
   tier: text('tier').default('free'),       // 'free' | 'premium'
   target_band: real('target_band'),
   avatar_url: text('avatar_url'),
+  avatar_frame: text('avatar_frame'),       // For Shop
   is_active: integer('is_active', { mode: 'boolean' }).default(true),
   ai_persona: text('ai_persona').default('james'), // james, emily, dr_chen, sarah
   timezone: text('timezone').default('UTC'),
   current_streak: integer('current_streak').default(0),
   longest_streak: integer('longest_streak').default(0),
   last_active_date: text('last_active_date'),
+  gems: integer('gems').default(0),          // Hard currency
+  coins: integer('coins').default(0),        // Soft currency
+  xp: integer('xp').default(0),              // Experience points
+  level: integer('level').default(1),        // User level
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
   updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
 });
@@ -40,36 +45,52 @@ export const refreshTokens = sqliteTable('refresh_tokens', {
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
 });
 
+// --- Test Center Infrastructure (RESTORED) ---
+
 export const courses = sqliteTable('courses', {
   id: uuid('id'),
   title: text('title').notNull(),
+  slug: text('slug').notNull().unique(),
   description: text('description'),
-  level: text('level').default('beginner'), // beginner, intermediate, advanced
   thumbnail_url: text('thumbnail_url'),
-  price: real('price').default(0.0),
+  level: text('level'), // A1, A2, B1, B2, C1, C2
+  category: text('category').default('general'),
+  order: integer('order').default(0),
+  is_active: integer('is_active', { mode: 'boolean' }).default(true),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const courseEnrollments = sqliteTable('course_enrollments', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  course_id: text('course_id').notNull().references(() => courses.id, { onDelete: 'cascade' }),
+  status: text('status').default('enrolled'), // enrolled, completed, dropped
+  enrolled_at: timestamp('enrolled_at').default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  userCourseUc: unique('_user_course_uc').on(table.user_id, table.course_id)
+}));
 
 export const lessons = sqliteTable('lessons', {
   id: uuid('id'),
-  course_id: text('course_id').notNull().references(() => courses.id, { onDelete: 'cascade' }),
+  course_id: text('course_id').references(() => courses.id, { onDelete: 'cascade' }),
   title: text('title').notNull(),
   content: text('content'), // Markdown
   order: integer('order').default(0),
   lesson_type: text('lesson_type'), // video, reading, listening, writing, speaking
   pdf_url: text('pdf_url'),
   time_limit: integer('time_limit').default(60), // in minutes
-  is_test: integer('is_test', { mode: 'boolean' }).default(false),
+  is_test: integer('is_test', { mode: 'boolean' }).default(true), // Default to true now as we focus on tests
   test_type: text('test_type'), // mini, full, practice
-  speaking_part: integer('speaking_part'), // LEGACY: single-part (1|2|3). Use lesson_parts for new lessons.
-  lesson_parts: text('lesson_parts', { mode: 'json' }), // Unified parts array for ALL skills: [1,2,3] (speaking), [1,2] (writing tasks), [1,3] (reading passages), etc.
-  metadata: text('metadata', { mode: 'json' }), // Flexible extra config (e.g. audio_url for listening). NOT used for parts/tasks.
+  lesson_parts: text('lesson_parts', { mode: 'json' }), // [1,2,3]
+  speaking_part: integer('speaking_part'), // Legacy compat
+  metadata: text('metadata', { mode: 'json' }),
 });
 
 export const passages = sqliteTable('passages', {
   id: uuid('id'),
   lesson_id: text('lesson_id').notNull().references(() => lessons.id, { onDelete: 'cascade' }),
   title: text('title'),
-  content_html: text('content_html'), // HTML or Markdown
+  content_html: text('content_html'),
   order: integer('order').default(0),
 });
 
@@ -77,9 +98,9 @@ export const questionGroups = sqliteTable('question_groups', {
   id: uuid('id'),
   passage_id: text('passage_id').references(() => passages.id, { onDelete: 'cascade' }),
   lesson_id: text('lesson_id').notNull().references(() => lessons.id, { onDelete: 'cascade' }),
-  title: text('title'), // e.g., "Questions 1-5"
-  instruction: text('instruction'), // e.g., "Do the following statements agree with the information given..."
-  group_type: text('group_type'), // e.g., "TRUE_FALSE_NOT_GIVEN"
+  title: text('title'),
+  instruction: text('instruction'),
+  group_type: text('group_type'),
   order: integer('order').default(0),
 });
 
@@ -90,7 +111,7 @@ export const questions = sqliteTable('questions', {
   question_type: text('question_type').notNull(), // reading, listening, writing, speaking
   title: text('title'),
   content: text('content').notNull(),
-  options: text('options', { mode: 'json' }), // JSON string for Multiple Choice
+  options: text('options', { mode: 'json' }),
   correct_answer: text('correct_answer'),
   explanation: text('explanation'),
   points: integer('points').default(1),
@@ -104,7 +125,7 @@ export const submissions = sqliteTable('submissions', {
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   question_id: text('question_id').notNull().references(() => questions.id, { onDelete: 'cascade' }),
   answer_text: text('answer_text').notNull(),
-  status: text('status').default('pending'), // pending, scoring, completed, failed
+  status: text('status').default('pending'),
   score: real('score'),
   feedback: text('feedback', { mode: 'json' }),
   raw_ai_response: text('raw_ai_response'),
@@ -114,24 +135,23 @@ export const userProgress = sqliteTable('user_progress', {
   id: uuid('id'),
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   lesson_id: text('lesson_id').notNull().references(() => lessons.id, { onDelete: 'cascade' }),
-  status: text('status').default('not_started'), // not_started, in_progress, completed, scoring
+  status: text('status').default('not_started'),
   score: real('score').default(0.0),
   total_questions: real('total_questions').default(0.0),
   correct_answers: real('correct_answers').default(0.0),
   draft_answers: text('draft_answers', { mode: 'json' }),
   time_left: integer('time_left'),
-  // Deferred scoring fields
-  scoring_status: text('scoring_status').default('none'), // none | pending | completed | failed
+  scoring_status: text('scoring_status').default('none'),
   full_result_unlocked: integer('full_result_unlocked', { mode: 'boolean' }).default(false),
-  preview_score: real('preview_score'),          // band score tổng — luôn hiện cho free
-  result_available_at: timestamp('result_available_at'), // thời điểm kết quả sẵn sàng
+  preview_score: real('preview_score'),
+  result_available_at: timestamp('result_available_at'),
   completed_at: timestamp('completed_at'),
   updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
-}, (table) => {
-  return {
-    userLessonUc: unique('_user_lesson_uc').on(table.user_id, table.lesson_id)
-  }
-});
+}, (table) => ({
+  userLessonUc: unique('_user_lesson_uc').on(table.user_id, table.lesson_id)
+}));
+
+// --- New Vocabulary & Practice Infrastructure ---
 
 export const vocabCourses = sqliteTable('vocab_courses', {
   id: uuid('id'),
@@ -139,12 +159,12 @@ export const vocabCourses = sqliteTable('vocab_courses', {
   slug: text('slug').notNull().unique(),
   description: text('description'),
   thumbnail_url: text('thumbnail_url'),
-  structure_type: text('structure_type').default('cefr_levels').notNull(),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const vocabulary = sqliteTable('vocabulary', {
-  id: uuid('id'),
-  vocab_course_id: text('vocab_course_id').references(() => vocabCourses.id, { onDelete: 'cascade' }),
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  vocab_course_id: text('vocab_course_id').references(() => vocabCourses.id, { onDelete: 'set null' }),
   word: text('word').notNull().unique(),
   definition: text('definition'),
   definition_vi: text('definition_vi'),
@@ -158,31 +178,65 @@ export const vocabulary = sqliteTable('vocabulary', {
   level: text('level'),
 });
 
-export const courseEnrollments = sqliteTable('course_enrollments', {
+export const userVocabProgress = sqliteTable('user_vocab_progress', {
   id: uuid('id'),
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  course_id: text('course_id').notNull().references(() => courses.id, { onDelete: 'cascade' }),
-  status: text('status').default('enrolled'), // enrolled, completed, dropped
-  enrolled_at: timestamp('enrolled_at').default(sql`CURRENT_TIMESTAMP`),
-}, (table) => {
-  return {
-    userCourseUc: unique('_user_course_uc').on(table.user_id, table.course_id)
-  }
+  vocab_id: integer('vocab_id').references(() => vocabulary.id, { onDelete: 'cascade' }),
+  status: text('status').default('new'), // new, learning, learned, mastered
+  reviewed_at: timestamp('reviewed_at').default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  userVocabUc: unique('_user_vocab_uc').on(table.user_id, table.vocab_id)
+}));
+
+export const userWordVault = sqliteTable('user_word_vault', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  vocab_id: integer('vocab_id').references(() => vocabulary.id, { onDelete: 'cascade' }),
+  custom_word: text('custom_word'),
+  custom_definition: text('custom_definition'),
+  personal_notes: text('personal_notes'),
+  group_name: text('group_name').default('General'),
+  status: text('status').default('new'),
+  next_review_at: timestamp('next_review_at'),
+  ease_factor: real('ease_factor').default(2.5),
+  interval: integer('interval').default(0),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+  updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const dailyChallenges = sqliteTable('daily_challenges', {
+  id: uuid('id'),
+  challenge_date: text('challenge_date').notNull().unique(), // YYYY-MM-DD
+  topic: text('topic'),
+  tasks: text('tasks', { mode: 'json' }),
+  content: text('content', { mode: 'json' }),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const userChallengeCompletion = sqliteTable('user_challenge_completion', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  challenge_id: text('challenge_id').references(() => dailyChallenges.id, { onDelete: 'cascade' }),
+  is_completed: integer('is_completed', { mode: 'boolean' }).default(false),
+  reward_claimed: integer('reward_claimed', { mode: 'boolean' }).default(false),
+  rewards_claimed: integer('rewards_claimed', { mode: 'boolean' }).default(false), // Alias for compat
+  completed_at: timestamp('completed_at'),
+}, (table) => ({
+  userChallengeUc: unique('_user_challenge_uc').on(table.user_id, table.challenge_id),
+}));
 
 export const speakingSessions = sqliteTable('speaking_sessions', {
   id: uuid('id'),
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  lesson_id: text('lesson_id').references(() => lessons.id, { onDelete: 'set null' }), // null for free-practice sessions
-  persona_id: text('persona_id').notNull(), // 'james' | 'emily' | 'dr_chen' | 'sarah'
+  lesson_id: text('lesson_id').references(() => lessons.id, { onDelete: 'set null' }),
+  persona_id: text('persona_id').notNull(),
   topic: text('topic').notNull(),
-  part: integer('part').notNull(),          // 1 | 2 | 3
-  status: text('status').default('active'), // 'active' | 'completed'
+  part: integer('part').notNull(),
+  status: text('status').default('active'),
   turn_count: integer('turn_count').default(0),
   average_band: real('average_band'),
-  report: text('report', { mode: 'json' }), // SessionReport JSON (full)
-  // Deferred report fields
-  report_available_at: timestamp('report_available_at'), // khi nào free user được xem
+  report: text('report', { mode: 'json' }),
+  report_available_at: timestamp('report_available_at'),
   report_unlocked: integer('report_unlocked', { mode: 'boolean' }).default(false),
   started_at: timestamp('started_at').default(sql`CURRENT_TIMESTAMP`),
   ended_at: timestamp('ended_at'),
@@ -192,7 +246,7 @@ export const speakingTurns = sqliteTable('speaking_turns', {
   id: uuid('id'),
   session_id: text('session_id').notNull().references(() => speakingSessions.id, { onDelete: 'cascade' }),
   transcript: text('transcript'),
-  ai_response: text('ai_response', { mode: 'json' }), // ExaminerFeedback
+  ai_response: text('ai_response', { mode: 'json' }),
   band_estimate: real('band_estimate'),
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
 });
@@ -203,32 +257,17 @@ export const devicePushTokens = sqliteTable('device_push_tokens', {
   expo_push_token: text('expo_push_token').notNull(),
   platform: text('platform').notNull(),
   updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
-}, (table) => {
-  return {
-    userExpoPushUc: unique('_user_expo_push_uc').on(table.user_id, table.expo_push_token)
-  }
-});
-
-// Track vocabulary learning status per user (seen → learned → mastered)
-export const userVocabProgress = sqliteTable('user_vocab_progress', {
-  id: uuid('id'),
-  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  vocab_id: text('vocab_id').notNull().references(() => vocabulary.id, { onDelete: 'cascade' }),
-  status: text('status').default('seen'), // 'seen' | 'learned' | 'mastered'
-  reviewed_at: timestamp('reviewed_at').default(sql`CURRENT_TIMESTAMP`),
 }, (table) => ({
-  userVocabUc: unique('_user_vocab_uc').on(table.user_id, table.vocab_id),
+  userExpoPushUc: unique('_user_expo_push_uc').on(table.user_id, table.expo_push_token)
 }));
 
-// Track daily learning activity for streak calculation
 export const dailyActivity = sqliteTable('daily_activity', {
   id: uuid('id'),
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  activity_date: text('activity_date').notNull(), // YYYY-MM-DD in user's timezone
+  activity_date: text('activity_date').notNull(),
   source: text('source').default('mobile'),
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
 }, (table) => ({
   userDateUc: unique('_user_date_uc').on(table.user_id, table.activity_date),
 }));
-
 

@@ -1,1 +1,0 @@
-ALTER TABLE `lessons` ADD `duration` integer DEFAULT 0;

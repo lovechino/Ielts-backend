@@ -123,51 +123,46 @@ export class StreakService {
   }
 
   async batchResetStaleStreaks(): Promise<number> {
-    const allUsers = await this.db.select({ id: users.id, timezone: users.timezone, current_streak: users.current_streak, last_active_date: users.last_active_date })
-      .from(users)
-      .where(eq(users.is_active, true as any))
+    // Lấy tất cả user đang có streak > 0 cùng với ngày hoạt động gần nhất
+    // Dùng một query duy nhất thay vì N+1 queries
+    const today = this.getTodayInTimezone('UTC'); // Cron chạy UTC
+    const yesterday = this.getYesterdayInTimezone(today);
+
+    // Lấy user_id của những user có activity hôm nay hoặc hôm qua
+    const activeUserRows = await this.db
+      .select({ user_id: dailyActivity.user_id })
+      .from(dailyActivity)
+      .where(
+        sql`${dailyActivity.activity_date} IN (${today}, ${yesterday})`
+      )
       .all();
 
-    let resetCount = 0;
+    const activeUserIds = new Set(activeUserRows.map(r => r.user_id));
 
-    for (const user of allUsers) {
-      if (!user.current_streak || user.current_streak <= 0) continue;
+    // Reset streak cho user có streak > 0 nhưng KHÔNG có activity hôm nay hoặc hôm qua
+    const staleUsers = await this.db
+      .select({ id: users.id, longest_streak: users.longest_streak })
+      .from(users)
+      .where(
+        and(
+          eq(users.is_active, true as any),
+          sql`${users.current_streak} > 0`
+        )
+      )
+      .all();
 
-      const tz = user.timezone ?? 'UTC';
-      const today = this.getTodayInTimezone(tz);
-      const yesterday = this.getYesterdayInTimezone(today);
+    const toReset = staleUsers.filter(u => !activeUserIds.has(u.id));
 
-      const activityToday = await this.db.select({ id: dailyActivity.id })
-        .from(dailyActivity)
-        .where(and(
-          eq(dailyActivity.user_id, user.id),
-          eq(dailyActivity.activity_date, today),
-        ))
-        .get();
+    if (toReset.length === 0) return 0;
 
-      const activityYesterday = await this.db.select({ id: dailyActivity.id })
-        .from(dailyActivity)
-        .where(and(
-          eq(dailyActivity.user_id, user.id),
-          eq(dailyActivity.activity_date, yesterday),
-        ))
-        .get();
+    // Batch update: reset current_streak = 0 cho tất cả user stale
+    // D1 không hỗ trợ bulk update với IN clause qua Drizzle trực tiếp,
+    // nên dùng raw SQL với prepared statement
+    const ids = toReset.map(u => `'${u.id}'`).join(',');
+    await this.db.run(
+      sql`UPDATE users SET current_streak = 0 WHERE id IN (${sql.raw(ids)})`
+    );
 
-      if (!activityToday && !activityYesterday) {
-        const freshStreak = await this.calculateStreak(user.id, tz);
-        if (freshStreak.current_streak === 0 && user.current_streak > 0) {
-          await this.db.update(users)
-            .set({
-              current_streak: 0,
-              longest_streak: freshStreak.longest_streak,
-            })
-            .where(eq(users.id, user.id))
-            .run();
-          resetCount++;
-        }
-      }
-    }
-
-    return resetCount;
+    return toReset.length;
   }
 }

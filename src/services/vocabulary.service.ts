@@ -86,7 +86,7 @@ export class VocabularyService {
   }
 
   async deleteVocabulary(id: string) {
-    await this.db.delete(vocabulary).where(eq(vocabulary.id, id)).run();
+    await this.db.delete(vocabulary).where(eq(vocabulary.id, Number(id))).run();
     return { success: true };
   }
 

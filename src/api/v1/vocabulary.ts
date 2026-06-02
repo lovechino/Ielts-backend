@@ -56,7 +56,7 @@ vocabRouter.patch('/:id/progress', async (c, next) => {
   const db = drizzle(c.env.DB);
 
   await db.insert(userVocabProgress)
-    .values({ user_id: payload.sub, vocab_id, status })
+    .values({ user_id: payload.sub, vocab_id: Number(vocab_id), status })
     .onConflictDoUpdate({
       target: [userVocabProgress.user_id, userVocabProgress.vocab_id],
       set: { status, reviewed_at: sql`CURRENT_TIMESTAMP` }
