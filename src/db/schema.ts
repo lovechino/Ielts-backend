@@ -176,6 +176,8 @@ export const vocabulary = sqliteTable('vocabulary', {
   synonyms: text('synonyms', { mode: 'json' }),
   antonyms: text('antonyms', { mode: 'json' }),
   level: text('level'),
+  is_priority: integer('is_priority', { mode: 'boolean' }).default(false),
+  is_academic: integer('is_academic', { mode: 'boolean' }).default(false),
 });
 
 export const userVocabProgress = sqliteTable('user_vocab_progress', {
@@ -266,8 +268,49 @@ export const dailyActivity = sqliteTable('daily_activity', {
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   activity_date: text('activity_date').notNull(),
   source: text('source').default('mobile'),
-  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
-}, (table) => ({
+  updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
+  }, (table) => ({
   userDateUc: unique('_user_date_uc').on(table.user_id, table.activity_date),
-}));
+  }));
+
+  export const transactions = sqliteTable('transactions', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  amount: real('amount').notNull(),         // Số tiền thực (VNĐ/USD) hoặc Gems
+  currency: text('currency').default('VND'), // VND, USD, GEMS
+  type: text('type').notNull(),             // 'topup', 'ad_reward', 'shop_purchase', 'subscription'
+  provider: text('provider'),               // 'stripe', 'payos', 'google_play', 'ad_network'
+  status: text('status').default('pending'), // 'pending', 'completed', 'failed'
+  metadata: text('metadata', { mode: 'json' }), // { ad_unit_id: '...', stripe_session_id: '...' }
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+  });
+
+  // --- Shop & Gamification Infrastructure ---
+
+
+export const shopItems = sqliteTable('shop_items', {
+  id: uuid('id'),
+  name: text('name').notNull(),
+  description: text('description'),
+  item_type: text('item_type').notNull(), // avatar, frame, booster, protection
+  sub_type: text('sub_type').default('static'), // static, animated
+  rarity: text('rarity').default('common'), // common, rare, epic, legendary
+  price_coins: integer('price_coins').default(0),
+  price_gems: integer('price_gems').default(0),
+  image_url: text('image_url'),
+  metadata: text('metadata', { mode: 'json' }), // { effect: 'xp_boost', value: 2.0, duration_hours: 24 }
+  is_active: integer('is_active', { mode: 'boolean' }).default(true),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const userInventory = sqliteTable('user_inventory', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  item_id: text('item_id').notNull().references(() => shopItems.id, { onDelete: 'cascade' }),
+  quantity: integer('quantity').default(1),
+  is_equipped: integer('is_equipped', { mode: 'boolean' }).default(false),
+  expires_at: timestamp('expires_at'),
+  purchased_at: timestamp('purchased_at').default(sql`CURRENT_TIMESTAMP`),
+  updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
+});
 

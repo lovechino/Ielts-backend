@@ -23,29 +23,30 @@ aiRouter.post('/pronunciation-check', async (c) => {
   }
 
   try {
-    // 1. Chuyển base64 sang Buffer cho Cloudflare AI
-    const audioBuffer = Uint8Array.from(atob(audio), c => c.charCodeAt(0));
+    // 1. Chuyển base64 sang Uint8Array
+    const binaryString = atob(audio);
+    const audioBuffer = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      audioBuffer[i] = binaryString.charCodeAt(i);
+    }
 
     // 2. Sử dụng Cloudflare Workers AI Whisper
-    const input = {
-      audio: [...audioBuffer],
-      model: '@cf/openai/whisper'
-    };
-
+    // Whisper model trên CF Workers AI yêu cầu input là một array buffer hoặc stream
     const response = await c.env.AI.run('@cf/openai/whisper', {
-      audio: [...audioBuffer]
+      audio: [...audioBuffer] // Vẫn cần array cho fetch wrapper của AI.run hiện tại
     });
 
     const transcription = response.text?.trim()?.toLowerCase() || '';
-    const cleanTarget = target_text.trim().toLowerCase();
+    const cleanTarget = target_text.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"");
+    const cleanHeard = transcription.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"");
 
     // 3. Tính toán độ chính xác (Levenshtein simple)
-    const accuracy = calculateAccuracy(cleanTarget, transcription);
+    const accuracy = calculateAccuracy(cleanTarget, cleanHeard);
 
     return c.json({
       success: true,
       data: {
-        transcription,
+        transcription: cleanHeard,
         target_text: cleanTarget,
         accuracy,
         status: accuracy >= 0.8 ? 'excellent' : accuracy >= 0.5 ? 'good' : 'try_again'

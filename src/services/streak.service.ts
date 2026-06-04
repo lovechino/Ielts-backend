@@ -1,7 +1,7 @@
 import { D1Database } from '@cloudflare/workers-types';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq, and, desc, sql } from 'drizzle-orm';
-import { users, dailyActivity } from '../db/schema';
+import { eq, and, desc, sql, inArray } from 'drizzle-orm';
+import { users, dailyActivity, userInventory, shopItems } from '../db/schema';
 
 export interface StreakData {
   current_streak: number;
@@ -47,23 +47,24 @@ export class StreakService {
     const today = this.getTodayInTimezone(timezone);
     const yesterday = this.getYesterdayInTimezone(today);
 
+    // Lấy 100 ngày gần nhất để tính chuỗi
     const activityRows = await this.db.select({ activity_date: dailyActivity.activity_date })
       .from(dailyActivity)
       .where(eq(dailyActivity.user_id, userId))
       .orderBy(desc(dailyActivity.activity_date))
+      .limit(100)
       .all();
 
     const activeDates = new Set(activityRows.map(r => r.activity_date));
     const todayActive = activeDates.has(today);
 
     let currentStreak = 0;
+    // Bắt đầu đếm từ 'hôm nay' nếu có hoạt động, ngược lại đếm từ 'hôm qua'
+    let checkDate = todayActive ? today : yesterday;
 
-    if (todayActive || activeDates.has(yesterday)) {
-      let checkDate = todayActive ? today : yesterday;
-      while (activeDates.has(checkDate)) {
-        currentStreak++;
-        checkDate = this.getYesterdayInTimezone(checkDate);
-      }
+    while (activeDates.has(checkDate)) {
+      currentStreak++;
+      checkDate = this.getYesterdayInTimezone(checkDate);
     }
 
     const user = await this.db.select({ longest_streak: users.longest_streak })
@@ -76,7 +77,7 @@ export class StreakService {
     return {
       current_streak: currentStreak,
       longest_streak: longestStreak,
-      last_active_date: activeDates.size > 0 ? [...activeDates].sort().pop()! : null,
+      last_active_date: activityRows.length > 0 ? activityRows[0].activity_date : null,
       today_active: todayActive,
     };
   }
@@ -124,11 +125,10 @@ export class StreakService {
 
   async batchResetStaleStreaks(): Promise<number> {
     // Lấy tất cả user đang có streak > 0 cùng với ngày hoạt động gần nhất
-    // Dùng một query duy nhất thay vì N+1 queries
     const today = this.getTodayInTimezone('UTC'); // Cron chạy UTC
     const yesterday = this.getYesterdayInTimezone(today);
 
-    // Lấy user_id của những user có activity hôm nay hoặc hôm qua
+    // 1. Lấy user_id của những user có activity hôm nay hoặc hôm qua
     const activeUserRows = await this.db
       .select({ user_id: dailyActivity.user_id })
       .from(dailyActivity)
@@ -139,9 +139,9 @@ export class StreakService {
 
     const activeUserIds = new Set(activeUserRows.map(r => r.user_id));
 
-    // Reset streak cho user có streak > 0 nhưng KHÔNG có activity hôm nay hoặc hôm qua
+    // 2. Lấy user có streak > 0 nhưng KHÔNG có activity hôm nay hoặc hôm qua
     const staleUsers = await this.db
-      .select({ id: users.id, longest_streak: users.longest_streak })
+      .select({ id: users.id })
       .from(users)
       .where(
         and(
@@ -151,18 +151,67 @@ export class StreakService {
       )
       .all();
 
-    const toReset = staleUsers.filter(u => !activeUserIds.has(u.id));
+    const potentiallyToReset = staleUsers.filter(u => !activeUserIds.has(u.id));
 
-    if (toReset.length === 0) return 0;
+    if (potentiallyToReset.length === 0) return 0;
 
-    // Batch update: reset current_streak = 0 cho tất cả user stale
-    // D1 không hỗ trợ bulk update với IN clause qua Drizzle trực tiếp,
-    // nên dùng raw SQL với prepared statement
-    const ids = toReset.map(u => `'${u.id}'`).join(',');
-    await this.db.run(
-      sql`UPDATE users SET current_streak = 0 WHERE id IN (${sql.raw(ids)})`
-    );
+    const potentiallyToResetIds = potentiallyToReset.map(u => u.id);
 
-    return toReset.length;
+    // 3. Kiểm tra xem ai có Streak Freeze (protection)
+    const protectedInventoryItems = await this.db
+      .select({ 
+        user_id: userInventory.user_id,
+        inventory_id: userInventory.id,
+        quantity: userInventory.quantity
+      })
+      .from(userInventory)
+      .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))
+      .where(
+        and(
+          inArray(userInventory.user_id, potentiallyToResetIds),
+          eq(shopItems.item_type, 'protection'),
+          sql`${userInventory.quantity} > 0`
+        )
+      )
+      .all();
+
+    const protectedUserMap = new Map(protectedInventoryItems.map(item => [item.user_id, item]));
+    const toResetUsers = potentiallyToReset.filter(u => !protectedUserMap.has(u.id));
+    const toProtectUsers = potentiallyToReset.filter(u => protectedUserMap.has(u.id));
+
+    // 4. Reset những user KHÔNG được bảo vệ
+    if (toResetUsers.length > 0) {
+      const ids = toResetUsers.map(u => `'${u.id}'`).join(',');
+      await this.db.run(
+        sql`UPDATE users SET current_streak = 0 WHERE id IN (${sql.raw(ids)})`
+      );
+    }
+
+    // 5. Tiêu thụ Streak Freeze cho những user được bảo vệ
+    for (const user of toProtectUsers) {
+      const item = protectedUserMap.get(user.id)!;
+      
+      await this.db.transaction(async (tx) => {
+        // Giảm số lượng hoặc xóa nếu hết
+        if (item.quantity > 1) {
+          await tx.update(userInventory)
+            .set({ quantity: item.quantity - 1, updated_at: new Date() })
+            .where(eq(userInventory.id, item.inventory_id));
+        } else {
+          await tx.delete(userInventory)
+            .where(eq(userInventory.id, item.inventory_id));
+        }
+
+        // Insert activity giả cho 'today' để streak không bị reset
+        await tx.insert(dailyActivity).values({
+          id: crypto.randomUUID(),
+          user_id: user.id,
+          activity_date: today,
+          source: 'streak_freeze',
+        }).run();
+      });
+    }
+
+    return toResetUsers.length;
   }
 }

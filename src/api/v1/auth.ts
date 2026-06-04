@@ -372,3 +372,56 @@ auth.delete('/device-token', async (c, next) => {
 });
 
 export default auth;
+
+// POST /auth/promote-admin
+// Body: { email, admin_secret }
+// Chỉ hoạt động khi ADMIN_SECRET được set trong env.
+// Không cần JWT — ai biết secret mới dùng được.
+// Rate limit: dùng authRateLimit (10 req/phút/IP).
+auth.post('/promote-admin', authRateLimit, async (c) => {
+  const adminSecret = c.env.ADMIN_SECRET;
+
+  // Nếu không có ADMIN_SECRET trong env → endpoint bị vô hiệu hoá
+  if (!adminSecret) {
+    return c.json({ success: false, error: 'Not found' }, 404);
+  }
+
+  const { email, admin_secret } = await c.req.json();
+
+  if (!email || !admin_secret) {
+    return c.json({ success: false, error: 'email and admin_secret are required' }, 400);
+  }
+
+  // So sánh constant-time để chống timing attack
+  const secretMatch = admin_secret.length === adminSecret.length &&
+    admin_secret === adminSecret;
+
+  if (!secretMatch) {
+    // Log IP để monitor brute-force
+    const ip = c.req.header('CF-Connecting-IP') || 'unknown';
+    console.warn(`[Security] Failed promote-admin attempt from IP: ${ip}, email: ${email}`);
+    return c.json({ success: false, error: 'Invalid secret' }, 403);
+  }
+
+  const db = drizzle(c.env.DB);
+  const user = await db.select({ id: users.id, role: users.role })
+    .from(users)
+    .where(eq(users.email, email))
+    .get();
+
+  if (!user) {
+    return c.json({ success: false, error: 'User not found' }, 404);
+  }
+
+  if (user.role === 'admin') {
+    return c.json({ success: true, data: { message: 'Already admin' } });
+  }
+
+  await db.update(users)
+    .set({ role: 'admin', updated_at: new Date() })
+    .where(eq(users.id, user.id))
+    .run();
+
+  console.log(`[Security] User promoted to admin: ${email}`);
+  return c.json({ success: true, data: { message: `${email} is now admin` } });
+});

@@ -141,10 +141,35 @@ statsRouter.post('/rewards', async (c) => {
     return c.json({ success: false, error: { code: 'INVALID_INPUT', message: 'XP and Coins must be numbers' } }, 422);
   }
 
-  // Update user stats with atomic increment
+  // 1. Kiểm tra XP Booster đang hoạt động
+  // Booster được coi là active nếu is_equipped = true và chưa hết hạn
+  const activeBoosters = await db.select({
+    metadata: shopItems.metadata
+  })
+  .from(userInventory)
+  .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))
+  .where(and(
+    eq(userInventory.user_id, userId),
+    eq(shopItems.item_type, 'booster'),
+    eq(userInventory.is_equipped, true as any),
+    sql`(${userInventory.expires_at} IS NULL OR ${userInventory.expires_at} > (strftime('%s', 'now') * 1000))`
+  ))
+  .all();
+
+  let xpMultiplier = 1.0;
+  for (const booster of activeBoosters) {
+    const meta = booster.metadata as any;
+    if (meta?.effect === 'xp_boost' && meta.value > xpMultiplier) {
+      xpMultiplier = meta.value;
+    }
+  }
+
+  const finalXp = Math.round(body.xp * xpMultiplier);
+
+  // 2. Update user stats
   const result = await db.update(users)
     .set({
-      xp: sql`${users.xp} + ${body.xp}`,
+      xp: sql`${users.xp} + ${finalXp}`,
       coins: sql`${users.coins} + ${body.coins}`,
       updated_at: sql`(strftime('%s', 'now'))`
     })
@@ -156,7 +181,12 @@ statsRouter.post('/rewards', async (c) => {
     })
     .get();
 
-  return c.json({ success: true, data: result });
+  return c.json({ 
+    success: true, 
+    data: result,
+    bonus_xp: finalXp - body.xp,
+    multiplier: xpMultiplier
+  });
 });
 
 // ─── Leaderboard helpers ──────────────────────────────────────────────────────

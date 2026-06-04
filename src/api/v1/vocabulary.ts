@@ -19,6 +19,8 @@ vocabRouter.get('/', async (c) => {
   const topic = c.req.query('topic');
   const vocab_course_id = c.req.query('vocab_course_id');
   const structure_type = c.req.query('structure_type');
+  const is_priority = c.req.query('is_priority');
+  const is_academic = c.req.query('is_academic');
   const limit = c.req.query('limit');
   const offset = c.req.query('offset');
 
@@ -28,6 +30,8 @@ vocabRouter.get('/', async (c) => {
     topic,
     vocab_course_id,
     structure_type,
+    is_priority: is_priority === 'true' ? true : is_priority === 'false' ? false : undefined,
+    is_academic: is_academic === 'true' ? true : is_academic === 'false' ? false : undefined,
     limit: limit ? parseInt(limit) : undefined,
     offset: offset ? parseInt(offset) : undefined
   });

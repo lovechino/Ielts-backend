@@ -15,8 +15,17 @@ export class VocabularyService {
     this.cache = cache || null;
   }
 
-  async getAll(params: { level?: string; topic?: string; vocab_course_id?: string; structure_type?: string; limit?: number; offset?: number } = {}) {
-    const cacheKey = `vocab:${params.vocab_course_id || 'all'}:${params.level || 'all'}:${params.topic || 'all'}:${params.structure_type || 'all'}:${params.limit || 'all'}:${params.offset || 0}`;
+  async getAll(params: { 
+    level?: string; 
+    topic?: string; 
+    vocab_course_id?: string; 
+    structure_type?: string; 
+    is_priority?: boolean;
+    is_academic?: boolean;
+    limit?: number; 
+    offset?: number 
+  } = {}) {
+    const cacheKey = `vocab:${params.vocab_course_id || 'all'}:${params.level || 'all'}:${params.topic || 'all'}:${params.structure_type || 'all'}:${params.is_priority ?? 'all'}:${params.is_academic ?? 'all'}:${params.limit || 'all'}:${params.offset || 0}`;
     if (this.cache) {
       const cached = await this.cache.get(cacheKey);
       if (cached) return JSON.parse(cached);
@@ -25,11 +34,23 @@ export class VocabularyService {
     if (params.level) conditions.push(eq(vocabulary.level, params.level));
     if (params.topic) conditions.push(eq(vocabulary.topic, params.topic));
     if (params.vocab_course_id) conditions.push(eq(vocabulary.vocab_course_id, params.vocab_course_id));
+    
+    if (params.is_priority !== undefined) {
+      conditions.push(eq(vocabulary.is_priority, params.is_priority));
+    }
+    if (params.is_academic !== undefined) {
+      conditions.push(eq(vocabulary.is_academic, params.is_academic));
+    }
+
     if (params.structure_type === 'cefr_levels' && !params.level) {
       conditions.push(sql`${vocabulary.level} IN ('A1','A2','B1','B2','C1','C2')`);
     }
     let query = this.db.select().from(vocabulary).$dynamic();
     if (conditions.length > 0) query = query.where(and(...conditions));
+    
+    // Always order by priority for better UX in large lists
+    query = query.orderBy(sql`${vocabulary.is_priority} DESC, ${vocabulary.word} ASC`);
+
     if (params.limit) query = query.limit(params.limit);
     if (params.offset) query = query.offset(params.offset);
     const result = await query.all();

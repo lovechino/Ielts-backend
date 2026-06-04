@@ -1,0 +1,84 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "backend-cloudflare",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-14",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"vars": {
+		"FRONTEND_URL": "http://localhost:8081"
+	},
+	"kv_namespaces": [
+		{
+			"binding": "CACHE",
+			"id": "YOUR_KV_NAMESPACE_ID",
+			"preview_id": "YOUR_PREVIEW_KV_ID"
+		}
+	],
+	/*
+	"r2_buckets": [
+		{
+			"binding": "MY_BUCKET",
+			"bucket_name": "YOUR_BUCKET_NAME"
+		}
+	],
+	*/
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "YOUR_DB_NAME",
+			"database_id": "YOUR_DATABASE_ID",
+			"migrations_dir": "drizzle"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	"queues": {
+		"producers": [
+			{
+				"binding": "SCORING_QUEUE",
+				"queue": "scoring-queue"
+			},
+			{
+				"binding": "SPEAKING_QUEUE",
+				"queue": "speaking-queue"
+			},
+			{
+				"binding": "EMAIL_QUEUE",
+				"queue": "email-queue"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "scoring-queue",
+				"max_batch_size": 1,
+				"max_batch_timeout": 5,
+				"max_retries": 3
+			},
+			{
+				"queue": "speaking-queue",
+				"max_batch_size": 1,
+				"max_batch_timeout": 5,
+				"max_retries": 3
+			},
+			{
+				"queue": "email-queue",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 3
+			}
+		]
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	"triggers": {
+		"crons": [
+			"0 0 * * *",
+			"0 9 * * 1"
+		]
+	}
+}

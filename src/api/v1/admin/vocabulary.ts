@@ -86,7 +86,9 @@ adminVocabRouter.get('/export-sql', async (c) => {
     '  topic TEXT,',
     '  pronunciation TEXT,',
     '  part_of_speech TEXT,',
-    '  level TEXT',
+    '  level TEXT,',
+    '  is_priority INTEGER DEFAULT 0,',
+    '  is_academic INTEGER DEFAULT 0',
     ');',
     '',
     'CREATE VIRTUAL TABLE IF NOT EXISTS vocab_fts USING fts5(',
@@ -102,11 +104,14 @@ adminVocabRouter.get('/export-sql', async (c) => {
   for (let i = 0; i < words.length; i += BATCH) {
     const batch = words.slice(i, i + BATCH);
     const values = batch.map(w => {
-      const esc = (s: string | null | undefined) =>
-        s == null ? 'NULL' : `'${String(s).replace(/'/g, "''")}'`;
-      return `(${esc(w.word)},${esc(w.definition)},${esc(w.definition_vi)},${esc(w.example)},${esc(w.example_vi)},${esc(w.topic)},${esc(w.pronunciation)},${esc(w.part_of_speech)},${esc(w.level)})`;
+      const esc = (s: string | number | boolean | null | undefined) => {
+        if (s == null) return 'NULL';
+        if (typeof s === 'boolean') return s ? 1 : 0;
+        return `'${String(s).replace(/'/g, "''")}'`;
+      };
+      return `(${esc(w.word)},${esc(w.definition)},${esc(w.definition_vi)},${esc(w.example)},${esc(w.example_vi)},${esc(w.topic)},${esc(w.pronunciation)},${esc(w.part_of_speech)},${esc(w.level)},${w.is_priority ? 1 : 0},${w.is_academic ? 1 : 0})`;
     }).join(',\n  ');
-    lines.push(`INSERT OR IGNORE INTO vocabulary (word,definition,definition_vi,example,example_vi,topic,pronunciation,part_of_speech,level) VALUES`);
+    lines.push(`INSERT OR IGNORE INTO vocabulary (word,definition,definition_vi,example,example_vi,topic,pronunciation,part_of_speech,level,is_priority,is_academic) VALUES`);
     lines.push(`  ${values};`);
     lines.push('');
   }

@@ -20,6 +20,8 @@ export type Bindings = {
   FRONTEND_URL: string;
   RESEND_API_KEY?: string;
   ENABLE_ADMIN?: string;
+  /** Secret key để promote user thành admin. Không set = tính năng bị khoá. */
+  ADMIN_SECRET?: string;
   SCORING_QUEUE: Queue;
   SPEAKING_QUEUE: Queue;
   EMAIL_QUEUE: Queue;
