@@ -2,11 +2,11 @@ import { Hono } from 'hono';
 import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, inArray, sql, count, and, desc } from 'drizzle-orm';
-import { vocabulary, userVocabProgress, courseEnrollments, userProgress, lessons, users, speakingSessions } from '../../db/schema';
+import { vocabulary, userVocabProgress, courseEnrollments, userProgress, lessons, users, speakingSessions, shopItems, userInventory } from '../../db/schema';
 import { StreakService } from '../../services/streak.service';
-import type { Bindings } from '../../index';
+import type { Bindings, Variables } from '../../index';
 
-const statsRouter = new Hono<{ Bindings: Bindings }>();
+const statsRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 
 statsRouter.use('/*', async (c, next) => {
   const secret = c.env.JWT_SECRET || 'default-secret-key';

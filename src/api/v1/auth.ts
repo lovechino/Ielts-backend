@@ -4,11 +4,11 @@ import { drizzle } from 'drizzle-orm/d1';
 import { eq, and, gt, isNull } from 'drizzle-orm';
 import { users, courseEnrollments, courses, refreshTokens, devicePushTokens } from '../../db/schema';
 import bcrypt from 'bcryptjs';
-import { Bindings } from '../../index';
+import { Bindings, Variables } from '../../index';
 import googleAuth from './auth-google';
 import { authRateLimit } from '../../middleware/rateLimit';
 
-const auth = new Hono<{ Bindings: Bindings }>();
+const auth = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 
 auth.route('/google', googleAuth);
 

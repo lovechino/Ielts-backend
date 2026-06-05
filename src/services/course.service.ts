@@ -50,6 +50,11 @@ export class CourseService {
     return course;
   }
 
+  async getByTitle(title: string) {
+    const result = await this.db.select().from(courses).where(eq(courses.title, title)).limit(1);
+    return result[0] || null;
+  }
+
   async create(data: any) {
     const insertData = {
       id: crypto.randomUUID(),

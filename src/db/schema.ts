@@ -82,7 +82,6 @@ export const lessons = sqliteTable('lessons', {
   is_test: integer('is_test', { mode: 'boolean' }).default(true), // Default to true now as we focus on tests
   test_type: text('test_type'), // mini, full, practice
   lesson_parts: text('lesson_parts', { mode: 'json' }), // [1,2,3]
-  speaking_part: integer('speaking_part'), // Legacy compat
   metadata: text('metadata', { mode: 'json' }),
 });
 
@@ -92,6 +91,11 @@ export const passages = sqliteTable('passages', {
   title: text('title'),
   content_html: text('content_html'),
   order: integer('order').default(0),
+  part: integer('part').default(1),       // IELTS part number (1, 2, or 3)
+  audio_url: text('audio_url'),           // Audio file URL for Listening passages
+  transcript: text('transcript'),          // Audio transcript for accessibility
+  image_url: text('image_url'),           // For Writing Task 1 (chart/diagram)
+  task_type: text('task_type'),           // 'chart' | 'diagram' | 'map' | 'process' | 'letter' | 'report'
 });
 
 export const questionGroups = sqliteTable('question_groups', {
@@ -102,6 +106,9 @@ export const questionGroups = sqliteTable('question_groups', {
   instruction: text('instruction'),
   group_type: text('group_type'),
   order: integer('order').default(0),
+  part: integer('part').default(1),       // IELTS part number (1, 2, or 3)
+  question_start: integer('question_start'), // e.g. 1, 14, 27
+  question_end: integer('question_end'),     // e.g. 13, 26, 40
 });
 
 export const questions = sqliteTable('questions', {

@@ -36,7 +36,6 @@ export class LessonService {
       is_test: lessons.is_test,
       test_type: lessons.test_type,
       time_limit: lessons.time_limit,
-      speaking_part: lessons.speaking_part, // legacy — kept for backward compat
       lesson_parts: lessons.lesson_parts,   // unified parts array for all skills
     })
     .from(lessons)
@@ -160,20 +159,16 @@ export class LessonService {
 
     const mapped = {
       id: data.id || crypto.randomUUID(),
-      course_id: data.course_id || data.courseId,
+      course_id: data.course_id ?? data.courseId ?? null,
       title: data.title,
-      content: data.content,
-      order: data.order || 0,
-      lesson_type: data.lesson_type || data.lessonType,
-      pdf_url: data.pdf_url || data.pdfUrl,
+      content: data.content ?? null,
+      order: data.order ?? 0,
+      lesson_type: data.lesson_type || data.lessonType || null,
+      pdf_url: data.pdf_url || data.pdfUrl || null,
       is_test: data.is_test ?? false,
-      // Only set test_type when explicitly provided — don't default to 'practice'
-      // for non-test lessons (is_test=false)
       test_type: data.test_type || null,
-      time_limit: data.time_limit || 60,
-      // speaking_part: legacy single-part field, kept for backward compat.
-      // New code should use lesson_parts instead.
-      speaking_part: data.speaking_part || data.speakingPart || null,
+      time_limit: data.time_limit ?? 60,
+      speaking_part: data.speaking_part ?? data.speakingPart ?? null,
       lesson_parts: lessonParts,
       metadata: metadata,
     };

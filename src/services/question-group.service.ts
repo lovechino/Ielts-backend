@@ -31,7 +31,10 @@ export class QuestionGroupService {
       title: data.title,
       instruction: data.instruction,
       group_type: data.group_type || data.groupType,
-      order: data.order || 0
+      order: data.order || 0,
+      part: data.part || 1,
+      question_start: data.question_start || data.questionStart || null,
+      question_end: data.question_end || data.questionEnd || null
     }).returning();
     return result[0];
   }

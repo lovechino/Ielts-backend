@@ -4,9 +4,9 @@ import { drizzle } from 'drizzle-orm/d1';
 import { eq } from 'drizzle-orm';
 import { users } from '../../../db/schema';
 import { VocabularyService } from '../../../services/vocabulary.service';
-import type { Bindings } from '../../../index';
+import type { Bindings, Variables } from '../../../index';
 
-const adminVocabRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
+const adminVocabRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>({ strict: false });
 
 adminVocabRouter.use('/*', async (c, next) => {
   if (c.env.ENABLE_ADMIN !== 'true') {
@@ -33,14 +33,14 @@ adminVocabRouter.use('/*', async (c, next) => {
   return next();
 });
 
-adminVocabRouter.post('/courses', async (c) => {
+adminVocabRouter.post('/paths', async (c) => {
   const body = await c.req.json();
   const service = new VocabularyService(c.env.DB, c.env.CACHE);
   const course = await service.createCourse(body);
   return c.json({ success: true, data: course });
 });
 
-adminVocabRouter.put('/courses/:id', async (c) => {
+adminVocabRouter.put('/paths/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json();
   const service = new VocabularyService(c.env.DB, c.env.CACHE);
@@ -48,7 +48,7 @@ adminVocabRouter.put('/courses/:id', async (c) => {
   return c.json({ success: true, data: course });
 });
 
-adminVocabRouter.delete('/courses/:id', async (c) => {
+adminVocabRouter.delete('/paths/:id', async (c) => {
   const id = c.req.param('id');
   const service = new VocabularyService(c.env.DB, c.env.CACHE);
   const result = await service.deleteCourse(id);
@@ -103,7 +103,7 @@ adminVocabRouter.get('/export-sql', async (c) => {
   const BATCH = 500;
   for (let i = 0; i < words.length; i += BATCH) {
     const batch = words.slice(i, i + BATCH);
-    const values = batch.map(w => {
+    const values = batch.map((w: any) => {
       const esc = (s: string | number | boolean | null | undefined) => {
         if (s == null) return 'NULL';
         if (typeof s === 'boolean') return s ? 1 : 0;

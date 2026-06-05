@@ -193,9 +193,9 @@ export class StreakService {
       
       await this.db.transaction(async (tx) => {
         // Giảm số lượng hoặc xóa nếu hết
-        if (item.quantity > 1) {
+        if ((item.quantity ?? 0) > 1) {
           await tx.update(userInventory)
-            .set({ quantity: item.quantity - 1, updated_at: new Date() })
+            .set({ quantity: (item.quantity ?? 0) - 1, updated_at: new Date() })
             .where(eq(userInventory.id, item.inventory_id));
         } else {
           await tx.delete(userInventory)

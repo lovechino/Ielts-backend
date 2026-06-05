@@ -39,7 +39,7 @@ export class ChallengeService {
       .from(lessons)
       .where(and(
         eq(lessons.lesson_type, 'reading'),
-        eq(lessons.is_active, true as any)
+        eq(lessons.is_test, true as any)
       ))
       .orderBy(sql`RANDOM()`)
       .limit(1)
@@ -50,7 +50,7 @@ export class ChallengeService {
       .from(lessons)
       .where(and(
         eq(lessons.lesson_type, 'listening'),
-        eq(lessons.is_active, true as any)
+        eq(lessons.is_test, true as any)
       ))
       .orderBy(sql`RANDOM()`)
       .limit(1)

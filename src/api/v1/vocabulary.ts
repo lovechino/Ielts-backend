@@ -8,7 +8,7 @@ import type { Bindings } from '../../index';
 
 const vocabRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
 
-vocabRouter.get('/courses', async (c) => {
+vocabRouter.get('/paths', async (c) => {
   const service = new VocabularyService(c.env.DB, c.env.CACHE);
   const courses = await service.getCourses();
   return c.json({ success: true, data: courses });

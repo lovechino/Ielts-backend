@@ -3,9 +3,9 @@ import { drizzle } from 'drizzle-orm/d1';
 import { shopItems, userInventory, users } from '../../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { jwtMiddleware } from '../../middleware/auth';
-import type { Bindings } from '../../index';
+import type { Bindings, Variables } from '../../index';
 
-const shopRouter = new Hono<{ Bindings: Bindings }>();
+const shopRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 
 // Tất cả các routes yêu cầu đăng nhập
 shopRouter.use('*', jwtMiddleware);
@@ -77,7 +77,7 @@ shopRouter.post('/buy', async (c) => {
     const totalPriceGems = (item.price_gems || 0) * quantity;
 
     // 2. Kiểm tra số dư
-    if (userData.coins < totalPriceCoins || userData.gems < totalPriceGems) {
+    if ((userData.coins ?? 0) < totalPriceCoins || (userData.gems ?? 0) < totalPriceGems) {
       return c.json({ success: false, error: 'Insufficient balance' }, 400);
     }
 
@@ -86,8 +86,8 @@ shopRouter.post('/buy', async (c) => {
       // Trừ tiền
       await tx.update(users)
         .set({ 
-          coins: userData.coins - totalPriceCoins,
-          gems: userData.gems - totalPriceGems,
+          coins: (userData.coins ?? 0) - totalPriceCoins,
+          gems: (userData.gems ?? 0) - totalPriceGems,
           updated_at: new Date()
         })
         .where(eq(users.id, userData.id));
@@ -134,6 +134,7 @@ shopRouter.post('/equip', async (c) => {
         type: shopItems.item_type,
         url: shopItems.image_url,
         itemId: shopItems.id,
+        metadata: shopItems.metadata,
       })
       .from(userInventory)
       .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))

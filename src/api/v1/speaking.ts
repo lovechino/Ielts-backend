@@ -3,7 +3,7 @@ import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, desc, and } from 'drizzle-orm';
 import type { Bindings } from '../../index';
-import { speakingSessions, speakingTurns, users, lessons } from '../../db/schema';
+import { speakingSessions, speakingTurns, users, lessons, questionGroups, questions, passages } from '../../db/schema';
 import { aiRateLimit } from '../../middleware/rateLimit';
 import { sendPushNotification } from '../../services/push.service';
 import { processSpeakingReport } from '../../workers/speaking-consumer';
@@ -145,6 +145,9 @@ speakingRouter.post('/session/start', aiRateLimit, async (c) => {
         if (lesson.content) {
           try {
             fullContent = typeof lesson.content === 'string' ? JSON.parse(lesson.content) : lesson.content;
+            if (typeof fullContent === 'string') {
+              fullContent = { legacy_content: fullContent };
+            }
           } catch {
             fullContent = { legacy_content: lesson.content };
           }
@@ -156,32 +159,88 @@ speakingRouter.post('/session/start', aiRateLimit, async (c) => {
     const currentPart = partsList[0];
     const isPractice = sessionTopic === 'Free Practice';
 
-    // Create AI Instruction based on structured content
-    let partInstruction = `Topic: ${sessionTopic}.`;
-    if (fullContent) {
-      const pData = fullContent[`part${currentPart}`];
-      if (pData) partInstruction += ` Focus on these cues: ${JSON.stringify(pData)}.`;
+    // Extract questions directly from relational DB (passages → question_groups → questions)
+    // This is the CORRECT source of truth — Admin CMS saves here, NOT to lessons.content
+    let extractedQuestions: any[] = [];
+    if (lesson_id && !isPractice) {
+      const groups = await db.select()
+        .from(questionGroups)
+        .where(eq(questionGroups.lesson_id, lesson_id))
+        .all();
+
+      // Ensure we only take one group per part (in case of duplicates created by Admin UI bugs)
+      const uniqueGroups = new Map<number, any>();
+      for (const group of groups) {
+        uniqueGroups.set(Number(group.part) || 1, group);
+      }
+      
+      const distinctGroups = Array.from(uniqueGroups.values());
+      distinctGroups.sort((a, b) => (Number(a.part) || 1) - (Number(b.part) || 1));
+
+      for (const group of distinctGroups) {
+        const pNum = Number(group.part) || 1;
+
+        const groupQuestions = await db.select()
+          .from(questions)
+          .where(eq(questions.group_id, group.id))
+          .all();
+
+        if (pNum === 2) {
+          // For Part 2, cue card is stored in the passage's content_html
+          let cueCard = '';
+          if (group.passage_id) {
+            const passage = await db.select()
+              .from(passages)
+              .where(eq(passages.id, group.passage_id))
+              .get();
+            cueCard = passage?.content_html || '';
+          }
+          let fullCueCardText = cueCard;
+          if (groupQuestions.length > 0) {
+            const bullets = groupQuestions.map(q => q.content).join('\n');
+            fullCueCardText += '\n\n' + bullets;
+          }
+
+          if (cueCard) {
+            extractedQuestions.push({
+              part: 2,
+              question: `Now, I'm going to give you a topic and I'd like you to talk about it for 1 to 2 minutes. Before you talk, you'll have 1 minute to think about what you're going to say. Here is your topic: ${cueCard}`,
+              cueCardText: fullCueCardText
+            });
+          }
+        } else {
+          // Part 1 and Part 3: each question row = one examiner question
+          groupQuestions.forEach(q => {
+            extractedQuestions.push({ part: pNum, question: q.content });
+          });
+        }
+      }
     }
 
-    const openingPrompt = isPractice
-      ? `You are the friendly IELTS speaking examiner ${persona.name}. Start a free practice conversational session. Generate a friendly opening greeting and the first general question. Under 35 words. Return STRICT JSON: { "response": "..." }`
-      : `You are the IELTS speaking examiner ${persona.name}. 
-Start an official Mock Test Part ${currentPart}. 
-Context: ${partInstruction}
-Available Parts in this session: ${partsList.join(', ')}.
+    let greeting = `Hello, my name is ${persona.name}. I will be your examiner today. Could you tell me your full name, please?`;
+    let preGeneratedQuestions = extractedQuestions;
 
-MANDATE: 
-- Generate a professional opening greeting.
-- Ask the first question for Part ${currentPart}.
-- Keep it under 35 words. 
-- Return STRICT JSON: { "response": "..." }`;
+    // Use AI only if it's Free Practice OR we failed to extract questions from fullContent
+    if (isPractice || preGeneratedQuestions.length === 0) {
+      const openingPrompt = isPractice
+        ? `You are the friendly IELTS examiner ${persona.name}. Start a free practice session on "${sessionTopic}". Generate a brief greeting and 3 general questions. Return STRICT JSON: { "greeting": "...", "questions": [ { "part": 1, "question": "..." } ] }`
+        : `You are IELTS examiner ${persona.name}. Generate exact questions for a test on "${sessionTopic}". Available Parts: ${partsList.join(', ')}. Return STRICT JSON: { "greeting": "...", "questions": [ { "part": number, "question": "..." } ] }`;
 
-    const aiRes = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-      messages: [{ role: 'user', content: openingPrompt }]
-    });
+      const aiRes = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+        messages: [{ role: 'user', content: openingPrompt }],
+        max_tokens: 2048
+      });
 
-    const parsed = cleanAndParseJSON(aiRes.response || '{}');
-    const greeting = parsed.response || (isPractice ? "Hello! Let's practice. How are you today?" : `Hello. Let's start the speaking exam. Can you introduce yourself and tell me about ${sessionTopic}?`);
+      const parsed = cleanAndParseJSON(aiRes.response || '{}') ?? {};
+      greeting = parsed.greeting || greeting;
+      
+      const rawQuestions = Array.isArray(parsed.questions) ? parsed.questions : [];
+      preGeneratedQuestions = rawQuestions.length > 0 ? rawQuestions : [
+         { part: 1, question: `Can you tell me a bit about ${sessionTopic}?` },
+         { part: 1, question: `What aspects of ${sessionTopic} do you enjoy the most?` },
+         { part: 1, question: "Do you plan to continue exploring this topic in the future?" }
+      ];
+    }
 
     await db.insert(speakingSessions).values({
       id: sessionId,
@@ -206,12 +265,25 @@ MANDATE:
       ],
       turnCount: 0,
       partTurnCount: 0,
-      bandScores: []
+      bandScores: [],
+      preGeneratedQuestions,
+      currentQuestionIndex: -1
     };
 
     await c.env.CACHE.put(getKVKey(sessionId), JSON.stringify(ctx), { expirationTtl: 7200 });
 
-    return c.json({ success: true, data: { sessionId, opening_question: greeting } });
+    const part2Q = preGeneratedQuestions.find((q: any) => q.part === 2 && q.cueCardText);
+    const cueCardText = part2Q ? part2Q.cueCardText : null;
+
+    return c.json({ 
+      success: true, 
+      data: { 
+        sessionId, 
+        opening_question: greeting,
+        cue_card_text: cueCardText,
+        parts: partsList
+      } 
+    });
   } catch (err: any) {
     console.error('Session start error:', err.message, err.stack);
     return c.json({ success: false, error: err.message }, 500);
@@ -243,125 +315,42 @@ speakingRouter.post('/session/turn', aiRateLimit, async (c) => {
     }
 
     const persona = PERSONAS[context.personaId as keyof typeof PERSONAS] || PERSONAS.james;
-    const isPractice = context.topic === 'Free Practice';
     
-    // Check for Part 2 specifics (Long turn)
-    const isPart2 = context.partsList[context.currentPartIndex] === 2;
-    
-    const DESCRIPTORS = IELTS_BAND_DESCRIPTORS;
-    const systemPrompt = `
-You are an expert, extremely strict official IELTS Speaking Examiner.
-Your Identity: ${persona.systemPrompt}
-Session: ${isPractice ? 'FREE PRACTICE' : `OFFICIAL MOCK TEST PART ${context.partsList[context.currentPartIndex]} on "${context.topic}"`}
-Available Structure: ${JSON.stringify(context.partsList)} (Current Index: ${context.currentPartIndex})
-Full Exam Content: ${JSON.stringify(context.fullContent)}
+    // --- Optimized: No per-turn scoring ---
+    // Instead of calling Llama to evaluate and generate the next question, 
+    // we just pop the next question from our pre-generated list.
 
-${IELTS_BAND_DESCRIPTORS}
+    const nextQuestionObj = context.preGeneratedQuestions[context.currentQuestionIndex + 1];
+    const responseText = nextQuestionObj ? nextQuestionObj.question : "That is the end of the speaking test. Thank you.";
 
-### EVALUATION MANDATES:
-1. Chain of Thought: Deeply analyze EACH of the 4 criteria BEFORE deciding the final score.
-2. Stinginess: Do NOT award Band 7.0+ unless the candidate uses complex academic vocabulary and sophisticated grammar.
-3. TRANSITION MANDATE (CRITICAL):
-   - Part 1: Ask 3-4 questions. Then return "transition_to_part": 2.
-   - Part 2: Give the Cue Card prompt. Wait for user. Once they speak, evaluate and return "transition_to_part": 3.
-   - Part 3: Ask 3-4 abstract questions. Then return "next_question": null to end.
-   - If a transition is needed, set the "transition_to_part" field in JSON.
-
-### OUTPUT JSON SCHEMA:
-{
-  "response": "Brief English response as examiner (<30 words)",
-  "transition_to_part": number | null,
-  "evaluation_metadata": { ... },
-  ...
-}
-Respond ONLY with raw JSON.`;
-
-    const aiRes = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...context.conversationHistory,
-        { role: 'user', content: transcript }
-      ],
-      max_tokens: 1024
-    });
-
-    const parsedRes = cleanAndParseJSON(aiRes.response || '{}');
-
-    // Tính band thực từ transcript để clamping (phòng hờ AI hallucination)
-    const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length;
-    let fallbackBand = 1.0;
-    if (wordCount < 10) fallbackBand = 2.0;
-    else if (wordCount < 25) fallbackBand = 4.0;
-    else if (wordCount < 50) fallbackBand = 5.5;
-    else fallbackBand = 6.5;
-
-    // Build feedback — use parsedRes if valid, otherwise fall back to safe defaults
-    // IMPORTANT: must be done BEFORE reading any field from parsedRes (it may be null)
-    const feedback = parsedRes ?? {
-      response: "Thank you for your answer.",
-      feedback_vi: { strengths: "N/A", weaknesses: "Câu trả lời quá ngắn", action_plan: "Hãy nói dài hơn" },
-      band_estimate: fallbackBand,
-      fluency: fallbackBand,
-      lexicalResource: fallbackBand,
-      grammaticalRange: fallbackBand,
-      pronunciation: fallbackBand,
-      correction: null,
-      next_question: null,
-      transition_to_part: null,
-    };
-
-    // Logic: Handle Transition if AI requested
-    const transitionTo = feedback.transition_to_part ?? null;
-    if (transitionTo && context.partsList.includes(transitionTo)) {
-      context.currentPartIndex = context.partsList.indexOf(transitionTo);
+    let transitionToPart: number | null = null;
+    // Handle part transition if the next question belongs to a different part
+    if (nextQuestionObj && context.partsList[context.currentPartIndex] !== nextQuestionObj.part) {
+      transitionToPart = nextQuestionObj.part;
+      context.currentPartIndex = context.partsList.indexOf(nextQuestionObj.part);
       context.partTurnCount = 0;
-
-      // Update DB with new part
       await db.update(speakingSessions)
-        .set({ part: transitionTo })
+        .set({ part: nextQuestionObj.part })
         .where(eq(speakingSessions.id, sessionId))
         .run();
     }
-    
-    // UI/DB Compatibility Mapping:
-    // Nếu AI dùng schema mới, ta map feedback_vi.weaknesses vào trường 'feedback' cũ để không lỗi UI
-    if (feedback.feedback_vi) {
-      (feedback as any).feedback = `${feedback.feedback_vi.weaknesses}. ${feedback.feedback_vi.action_plan}`;
-    }
 
-    const maxAllowedBand = wordCount < 12 ? 2.5
-      : wordCount < 25 ? 4.5
-      : wordCount < 40 ? 5.5
-      : wordCount < 60 ? 7.0
-      : 9.0;
-
-    const roundToHalf = (num: number) => Math.round(num * 2) / 2;
-
-    feedback.band_estimate = roundToHalf(Math.min(feedback.band_estimate ?? fallbackBand, maxAllowedBand));
-    feedback.fluency = roundToHalf(Math.min(feedback.fluency ?? feedback.band_estimate, maxAllowedBand));
-    feedback.lexicalResource = roundToHalf(Math.min(feedback.lexicalResource ?? feedback.band_estimate, maxAllowedBand));
-    feedback.grammaticalRange = roundToHalf(Math.min(feedback.grammaticalRange ?? feedback.band_estimate, maxAllowedBand));
-    feedback.pronunciation = roundToHalf(Math.min(feedback.pronunciation ?? feedback.band_estimate, maxAllowedBand));
-
+    context.currentQuestionIndex += 1;
     context.conversationHistory.push({ role: 'user', content: transcript });
-    context.conversationHistory.push({ role: 'assistant', content: feedback.response || '' });
+    context.conversationHistory.push({ role: 'assistant', content: responseText });
     if (context.conversationHistory.length > 10) {
       context.conversationHistory = context.conversationHistory.slice(-10);
     }
     context.turnCount += 1;
     context.partTurnCount += 1;
-    if (feedback.band_estimate) {
-      context.bandScores.push(feedback.band_estimate);
-    }
 
     await c.env.CACHE.put(getKVKey(sessionId), JSON.stringify(context), { expirationTtl: 7200 });
 
     await db.insert(speakingTurns).values({
       id: crypto.randomUUID(),
       session_id: sessionId,
-      transcript,
-      ai_response: JSON.stringify(feedback),
-      band_estimate: feedback.band_estimate ?? 0.0
+      transcript: transcript,
+      ai_response: JSON.stringify({ response: responseText })
     }).run();
 
     await db.update(speakingSessions)
@@ -369,7 +358,8 @@ Respond ONLY with raw JSON.`;
       .where(eq(speakingSessions.id, sessionId))
       .run();
 
-    return c.json({ success: true, data: { transcript, transition_to_part: feedback.transition_to_part, ...feedback } });
+    const isSessionDone = !nextQuestionObj;
+    return c.json({ success: true, data: { transcript, response: responseText, is_session_done: isSessionDone, transition_to_part: transitionToPart } });
   } catch (err: any) {
     console.error('Turn error:', err.message, err.stack);
     return c.json({ success: false, error: err.message }, 500);

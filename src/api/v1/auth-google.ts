@@ -3,9 +3,10 @@ import { sign } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, and } from 'drizzle-orm';
 import { users, oauthAccounts } from '../../db/schema';
-import { Bindings } from '../../index';
+import bcrypt from 'bcryptjs';
+import { Bindings, Variables } from '../../index';
 
-const googleAuth = new Hono<{ Bindings: Bindings }>();
+const googleAuth = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 
 // ── Helpers ──────────────────────────────────────────
 
@@ -166,11 +167,12 @@ googleAuth.post('/', async (c) => {
     // Refresh token dài hạn (30 ngày) — lưu vào DB để hỗ trợ silent refresh
     const { refreshTokens } = await import('../../db/schema');
     const refreshTokenValue = crypto.randomUUID();
+    const tokenHash = await bcrypt.hash(refreshTokenValue, 10);
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     await db.insert(refreshTokens).values({
       id: crypto.randomUUID(),
       user_id: user.id,
-      token: refreshTokenValue,
+      token_hash: tokenHash,
       expires_at: expiresAt,
     }).run();
 
@@ -292,11 +294,12 @@ googleAuth.get('/callback', async (c) => {
     // Refresh token dài hạn (30 ngày)
     const { refreshTokens } = await import('../../db/schema');
     const refreshTokenValue = crypto.randomUUID();
+    const tokenHash = await bcrypt.hash(refreshTokenValue, 10);
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     await db.insert(refreshTokens).values({
       id: crypto.randomUUID(),
       user_id: user!.id,
-      token: refreshTokenValue,
+      token_hash: tokenHash,
       expires_at: expiresAt,
     }).run();
 

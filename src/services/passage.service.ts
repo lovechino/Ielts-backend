@@ -25,7 +25,11 @@ export class PassageService {
       lesson_id: data.lesson_id || data.lessonId,
       title: data.title,
       content_html: data.content_html || data.contentHtml,
-      order: data.order || 0
+      order: data.order || 0,
+      part: data.part ?? 1,
+      audio_url: data.audio_url || data.audioUrl || null,
+      transcript: data.transcript || null,
+      image_url: data.image_url || data.imageUrl || null,
     }).returning();
     return result[0];
   }
@@ -42,6 +46,10 @@ export class PassageService {
     if (updateData.contentHtml) {
       updateData.content_html = updateData.contentHtml;
       delete updateData.contentHtml;
+    }
+    if (updateData.audioUrl) {
+      updateData.audio_url = updateData.audioUrl;
+      delete updateData.audioUrl;
     }
 
     const result = await this.db.update(passages)

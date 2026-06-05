@@ -8,6 +8,20 @@
       "when": 1780154013142,
       "tag": "0000_hesitant_azazel",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1780565582828,
+      "tag": "0001_pale_mystique",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1780579592151,
+      "tag": "0002_puzzling_jackal",
+      "breakpoints": true
     }
   ]
 }

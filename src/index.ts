@@ -27,7 +27,16 @@ export type Bindings = {
   EMAIL_QUEUE: Queue;
 };
 
-const app = new Hono<{ Bindings: Bindings }>({ strict: false });
+export type Variables = {
+  jwtPayload: any;
+  user: {
+    id: string;
+    email: string;
+    role: string;
+  };
+};
+
+const app = new Hono<{ Bindings: Bindings, Variables: Variables }>({ strict: false });
 
 // Middlewares
 app.use('*', logger());

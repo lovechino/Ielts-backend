@@ -48,8 +48,7 @@ export async function processSpeakingReport(env: Bindings, sessionId: string, us
   const turns = await db.select().from(speakingTurns).where(eq(speakingTurns.session_id, sessionId)).all();
   const session = await db.select().from(speakingSessions).where(eq(speakingSessions.id, sessionId)).get();
   
-  const avgBand = turns.length > 0 ? turns.reduce((acc, t) => acc + (t.band_estimate ?? 0), 0) / turns.length : 0.0;
-  
+  // Turns no longer have band_estimate (removed to save tokens). Llama evaluates everything at the end.
   // Calculate duration: ended_at (now) - started_at
   let duration = 300;
   if (session?.started_at) {
@@ -62,25 +61,23 @@ export async function processSpeakingReport(env: Bindings, sessionId: string, us
   const context = rawCtx ? JSON.parse(rawCtx) : { personaId: 'james', topic: 'Speaking test', part: 1 };
   
   const turnDetails = turns.map((t, i) => {
-    const ai = typeof t.ai_response === 'string' ? JSON.parse(t.ai_response) : t.ai_response as Record<string, any> | null;
-    return `Turn ${i + 1}:\nTranscript: "${t.transcript}"\nScores: overall=${t.band_estimate ?? 'N/A'}, fluency=${ai?.fluency ?? 'N/A'}, lexical=${ai?.lexicalResource ?? 'N/A'}, grammar=${ai?.grammaticalRange ?? 'N/A'}, pronunciation=${ai?.pronunciation ?? 'N/A'}`;
+    return `Turn ${i + 1}:\nExaminer Asked: "${JSON.parse(t.ai_response as string)?.response || 'N/A'}"\nCandidate Answered: "${t.transcript}"`;
   }).join('\n\n');
 
-  const reportPrompt = `You are an IELTS Speaking examiner. Generate a consolidated speaking report.
+  const reportPrompt = `You are an expert IELTS Speaking examiner. Generate a consolidated speaking report.
 ${IELTS_BAND_DESCRIPTORS}
 Session info:
 - Persona: ${context.personaId}
 - Topic: "${context.topic}"
-- Part: ${context.part}
 - Duration: ${duration} seconds
 - Total turns: ${turns.length}
 
-Full conversation with per-turn scores:
+Full conversation transcripts:
 ${turnDetails}
 
-Analyze ALL turns against the IELTS band descriptors above.
+Analyze ALL turns of the candidate's answers against the IELTS band descriptors above.
 Output a consolidated report with:
-- averageBandEstimate: weighted overall band across all turns
+- averageBandEstimate: weighted overall band across all turns (e.g. 6.5)
 - breakdown: { fluency, lexicalResource, grammaticalRange, pronunciation } — computed by analyzing EVERY turn's transcript against the criteria.
 - topErrors: extract actual language errors from transcripts. Empty array only if truly error-free.
 - nextSessionSuggestion: specific Vietnamese advice based on actual weaknesses observed
@@ -98,27 +95,20 @@ STRICT JSON output:
 }`;
 
   const aiRes = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-    messages: [{ role: 'user', content: reportPrompt }]
+    messages: [{ role: 'user', content: reportPrompt }],
+    max_tokens: 3072
   });
-
-  const avgFromTurns = (key: string): number => {
-    const vals = turns.map(t => {
-      const ai = typeof t.ai_response === 'string' ? JSON.parse(t.ai_response) : t.ai_response as Record<string, any> | null;
-      return ai?.[key];
-    }).filter(v => v != null) as number[];
-    return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : avgBand;
-  };
 
   const finalReport = cleanAndParseJSON(aiRes.response || '{}') || {
     sessionId, persona: context.personaId, duration, turnsCompleted: turns.length,
-    averageBandEstimate: avgBand,
+    averageBandEstimate: 0,
     breakdown: {
-      fluency: avgFromTurns('fluency'),
-      lexicalResource: avgFromTurns('lexicalResource'),
-      grammaticalRange: avgFromTurns('grammaticalRange'),
-      pronunciation: avgFromTurns('pronunciation'),
+      fluency: 0,
+      lexicalResource: 0,
+      grammaticalRange: 0,
+      pronunciation: 0,
     },
-    topErrors: [], nextSessionSuggestion: "Cố gắng luyện tập thêm nhé!"
+    topErrors: [], nextSessionSuggestion: "Không thể chấm điểm chi tiết. Vui lòng thử lại sau."
   };
 
   const reportAvailableAt = new Date(reportAvailableAtStr);
@@ -126,7 +116,7 @@ STRICT JSON output:
   await db.update(speakingSessions)
     .set({
       status: 'completed',
-      average_band: avgBand,
+      average_band: finalReport.averageBandEstimate || 0,
       report: JSON.stringify(finalReport),
       report_available_at: reportAvailableAt,
       report_unlocked: isPremium,

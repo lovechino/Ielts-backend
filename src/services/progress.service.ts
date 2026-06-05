@@ -1,6 +1,6 @@
 import { D1Database } from '@cloudflare/workers-types';
 import { drizzle } from 'drizzle-orm/d1';
-import { userProgress, questions, lessons, passages, submissions, users } from '../db/schema';
+import { userProgress, questions, lessons, passages, submissions, users, questionGroups } from '../db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { AIService } from './ai.service';
 import { sendPushNotification } from './push.service';
@@ -246,32 +246,65 @@ export class ProgressService {
     try {
       const aiService = new AIService(ai);
       const allPassages = await this.db.select().from(passages).where(eq(passages.lesson_id, lessonId)).all();
+      const allGroups = await this.db.select().from(questionGroups).where(eq(questionGroups.lesson_id, lessonId)).all();
+      const allQuestions = await this.db.select().from(questions).where(eq(questions.lesson_id, lessonId)).all();
       const persona = user?.ai_persona || 'james';
 
-      let totalScore = 0;
+      const tasksToGrade = answers.map((studentAns, i) => {
+        const question = allQuestions.find(q => q.id === studentAns.question_id);
+        const group = allGroups.find(g => g.id === question?.group_id);
+        const passage = allPassages.find(p => p.id === group?.passage_id) || allPassages[0];
+        // Assuming title indicates TASK1 or TASK2 or similar. If not, just pass 'writing_task'
+        const taskType = passage?.title?.toUpperCase().includes('TASK 1') ? 'TASK1' : (passage?.title?.toUpperCase().includes('TASK 2') ? 'TASK2' : 'TASK');
+        return {
+          question_id: studentAns.question_id,
+          task_prompt: passage?.content_html || '',
+          student_answer: studentAns.answer,
+          task_type: taskType,
+          originalIndex: i
+        };
+      });
+
+      const aiResult = await aiService.gradeWritingBatch(tasksToGrade, persona);
+      let avgScore = 0;
       const submissionUpdates: Array<{ id: string; score: number; feedback: any }> = [];
 
-      for (const studentAns of answers) {
-        const passage = allPassages[0];
-        const aiResult = await aiService.gradeWriting(passage?.content_html || '', studentAns.answer, persona);
-        totalScore += aiResult.overall_score;
+      if (aiResult.success && aiResult.data && aiResult.data.tasks_results) {
+        avgScore = aiResult.data.combined_score || 0;
+        
+        for (let i = 0; i < tasksToGrade.length; i++) {
+          const studentAns = answers[i];
+          // Llama returns tasks_results in the same order as input tasks
+          const taskRes = aiResult.data.tasks_results[i];
+          if (!taskRes) continue;
 
-        // Tìm submission đã insert lúc trước
-        const sub = await this.db.select({ id: submissions.id })
-          .from(submissions)
-          .where(and(
-            eq(submissions.user_id, userId),
-            eq(submissions.question_id, studentAns.question_id),
-            eq(submissions.status, 'pending'),
-          ))
-          .get();
+          // map from new schema to old schema to avoid breaking UI
+          const oldSchemaFeedback = {
+            overall_score: taskRes.overall_score,
+            criteria_scores: taskRes.criteria_scores,
+            detailed_errors: taskRes.detailed_errors,
+            sample_rewrite_segments: taskRes.sample_rewrite_segments,
+            suggested_version: taskRes.suggested_version,
+            word_count: taskRes.word_count,
+            feedback: `${taskRes.user_feedback_vi?.weaknesses || ""}. ${taskRes.user_feedback_vi?.action_plan || ""}`
+          };
 
-        if (sub) {
-          submissionUpdates.push({ id: sub.id, score: aiResult.overall_score, feedback: aiResult });
+          const sub = await this.db.select({ id: submissions.id })
+            .from(submissions)
+            .where(and(
+              eq(submissions.user_id, userId),
+              eq(submissions.question_id, studentAns.question_id),
+              eq(submissions.status, 'pending')
+            ))
+            .get();
+
+          if (sub) {
+            submissionUpdates.push({ id: sub.id, score: oldSchemaFeedback.overall_score, feedback: oldSchemaFeedback });
+          }
         }
+      } else {
+        console.error("Batch grading failed", aiResult.error);
       }
-
-      const avgScore = totalScore / (answers.length || 1);
 
       // Update submissions
       for (const upd of submissionUpdates) {

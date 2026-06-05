@@ -3,9 +3,9 @@ import { drizzle } from 'drizzle-orm/d1';
 import { users, transactions } from '../../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { jwtMiddleware } from '../../middleware/auth';
-import type { Bindings } from '../../index';
+import type { Bindings, Variables } from '../../index';
 
-const paymentRouter = new Hono<{ Bindings: Bindings }>();
+const paymentRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 
 /**
  * [MOCK PAYOS] - Tạo link thanh toán giả lập
