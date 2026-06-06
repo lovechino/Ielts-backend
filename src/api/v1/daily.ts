@@ -130,7 +130,8 @@ dailyRouter.post('/claim', async (c) => {
     db.update(users)
       .set({
         coins: sql`${users.coins} + 50`,
-        xp: sql`${users.xp} + 100`
+        xp: sql`${users.xp} + 100`,
+        updated_at: new Date()
       })
       .where(eq(users.id, userId))
   ]);

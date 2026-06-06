@@ -33,17 +33,15 @@ v1Router.route('/vault', vaultRouter);
 v1Router.route('/shop', shopRouter);
 v1Router.route('/payment', paymentRouter);
 
-// Admin routes (mounted at same paths — guarded by ENABLE_ADMIN env + JWT + role check)
-// In production (no ENABLE_ADMIN), all admin handlers return 404
-// In local dev (ENABLE_ADMIN=true), admin handlers require role=admin
+// Admin routes (mounted at /admin subpath — guarded by ENABLE_ADMIN env + JWT + role check)
 import { adminTestSetRouter, adminVocabRouter, adminUploadRouter, adminDailyRouter, adminStatsRouter, adminShopRouter, adminUserRouter } from './admin';
 
-v1Router.route('/test-sets', adminTestSetRouter);
-v1Router.route('/vocabulary', adminVocabRouter);
-v1Router.route('/upload', adminUploadRouter);
-v1Router.route('/daily', adminDailyRouter);
-v1Router.route('/stats', adminStatsRouter);
-v1Router.route('/shop', adminShopRouter);
+v1Router.route('/admin/test-sets', adminTestSetRouter);
+v1Router.route('/admin/vocabulary', adminVocabRouter);
+v1Router.route('/admin/upload', adminUploadRouter);
+v1Router.route('/admin/daily', adminDailyRouter);
+v1Router.route('/admin/stats', adminStatsRouter);
+v1Router.route('/admin/shop', adminShopRouter);
 v1Router.route('/admin/users', adminUserRouter);
 
 export default v1Router;

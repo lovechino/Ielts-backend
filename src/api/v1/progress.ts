@@ -222,7 +222,14 @@ progressRouter.post('/submit', aiRateLimit, async (c) => {
     // Truyền env để background scoring dùng Queue
     const result = await service.submitAndScore(userId, lesson_id, answers, c.env, c.executionCtx);
 
-    return c.json({ success: true, data: result });
+    return c.json({ 
+      success: true, 
+      data: {
+        ...result,
+        reward_issued: (result as any).reward_issued || false,
+        coins_awarded: (result as any).coins_awarded || 0
+      } 
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Submit failed';
     return c.json({ success: false, error: { message } }, 500);

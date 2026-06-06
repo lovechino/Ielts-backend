@@ -171,7 +171,7 @@ statsRouter.post('/rewards', async (c) => {
     .set({
       xp: sql`${users.xp} + ${finalXp}`,
       coins: sql`${users.coins} + ${body.coins}`,
-      updated_at: sql`(strftime('%s', 'now'))`
+      updated_at: sql`(strftime('%s', 'now') * 1000)`
     })
     .where(eq(users.id, userId))
     .returning({

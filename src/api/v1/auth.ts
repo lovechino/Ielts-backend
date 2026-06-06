@@ -247,6 +247,8 @@ auth.get('/me', async (c, next) => {
       target_band: user.target_band,
       avatar_url: user.avatar_url,
       ai_persona: user.ai_persona,
+      coins: user.coins,
+      xp: user.xp,
       enrolled_courses: enrolledCourses,
     },
   });

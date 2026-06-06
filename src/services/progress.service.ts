@@ -76,7 +76,12 @@ export class ProgressService {
   async completeLesson(userId: string, lessonId: string, stats: { score: number; total: number; correct: number }) {
     const existing = await this.getProgress(userId, lessonId);
     const now = new Date();
-    const data = {
+    
+    // Check if reward already claimed
+    const shouldAward = !existing || !existing.reward_claimed;
+    const LESSON_REWARD = 100;
+
+    const data: any = {
       status: 'completed' as const,
       score: stats.score,
       total_questions: stats.total,
@@ -85,12 +90,32 @@ export class ProgressService {
       updated_at: now,
     };
 
-    if (existing) {
-      return await this.db.update(userProgress).set(data).where(eq(userProgress.id, existing.id)).returning().get();
+    if (shouldAward) {
+      data.reward_claimed = true;
+      // Award coins to user
+      await this.db.update(users)
+        .set({ 
+          coins: sql`${users.coins} + ${LESSON_REWARD}`,
+          updated_at: now 
+        })
+        .where(eq(users.id, userId))
+        .run();
     }
-    return await this.db.insert(userProgress)
-      .values({ id: crypto.randomUUID(), user_id: userId, lesson_id: lessonId, ...data })
-      .returning().get();
+
+    let progress: any;
+    if (existing) {
+      progress = await this.db.update(userProgress).set(data).where(eq(userProgress.id, existing.id)).returning().get();
+    } else {
+      progress = await this.db.insert(userProgress)
+        .values({ id: crypto.randomUUID(), user_id: userId, lesson_id: lessonId, ...data })
+        .returning().get();
+    }
+
+    return {
+      ...progress,
+      reward_issued: shouldAward,
+      coins_awarded: shouldAward ? LESSON_REWARD : 0
+    };
   }
 
   /**

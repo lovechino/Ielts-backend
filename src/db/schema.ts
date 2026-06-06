@@ -153,6 +153,7 @@ export const userProgress = sqliteTable('user_progress', {
   preview_score: real('preview_score'),
   result_available_at: timestamp('result_available_at'),
   completed_at: timestamp('completed_at'),
+  reward_claimed: integer('reward_claimed', { mode: 'boolean' }).default(false),
   updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
 }, (table) => ({
   userLessonUc: unique('_user_lesson_uc').on(table.user_id, table.lesson_id)
@@ -275,6 +276,7 @@ export const dailyActivity = sqliteTable('daily_activity', {
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   activity_date: text('activity_date').notNull(),
   source: text('source').default('mobile'),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
   updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
   }, (table) => ({
   userDateUc: unique('_user_date_uc').on(table.user_id, table.activity_date),

@@ -112,6 +112,18 @@ STRICT JSON output:
   };
 
   const reportAvailableAt = new Date(reportAvailableAtStr);
+  const SPEAKING_REWARD = 100;
+
+  // Award coins if first time
+  if (session && !session.reward_claimed) {
+    await db.update(users)
+      .set({ 
+        coins: sql`${users.coins} + ${SPEAKING_REWARD}`,
+        updated_at: now
+      })
+      .where(eq(users.id, userId))
+      .run();
+  }
 
   await db.update(speakingSessions)
     .set({
@@ -120,6 +132,7 @@ STRICT JSON output:
       report: JSON.stringify(finalReport),
       report_available_at: reportAvailableAt,
       report_unlocked: isPremium,
+      reward_claimed: true,
       ended_at: now,
     })
     .where(eq(speakingSessions.id, sessionId))
