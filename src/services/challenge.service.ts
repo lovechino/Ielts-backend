@@ -92,8 +92,19 @@ export class ChallengeService {
       created_at: new Date(),
     };
 
-    await db.insert(dailyChallenges).values(newChallenge).run();
-    return newChallenge;
+    // Sử dụng onConflictDoNothing để tránh lỗi khi có nhiều request cùng lúc tạo challenge
+    await db.insert(dailyChallenges)
+      .values(newChallenge)
+      .onConflictDoNothing()
+      .run();
+    
+    // Query lại để lấy bản ghi thực tế (có thể là bản vừa tạo hoặc bản do request khác tạo trước đó)
+    const finalChallenge = await db.select()
+      .from(dailyChallenges)
+      .where(eq(dailyChallenges.challenge_date, date))
+      .get();
+
+    return finalChallenge || newChallenge;
   }
 
   async getUserPersonalizedTasks(userId: string) {

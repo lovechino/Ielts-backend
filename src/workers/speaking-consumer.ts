@@ -1,8 +1,8 @@
 import { MessageBatch, ExecutionContext } from '@cloudflare/workers-types';
 import { Bindings } from '../index';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
-import { speakingSessions, speakingTurns } from '../db/schema';
+import { eq, sql } from 'drizzle-orm';
+import { speakingSessions, speakingTurns, users } from '../db/schema';
 import { sendPushNotification } from '../services/push.service';
 
 const IELTS_BAND_DESCRIPTORS = `

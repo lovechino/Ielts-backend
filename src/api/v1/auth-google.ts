@@ -186,7 +186,11 @@ googleAuth.post('/', async (c) => {
           email: user.email,
           full_name: user.full_name,
           role: user.role,
+          target_band: user.target_band,
           avatar_url: user.avatar_url,
+          ai_persona: user.ai_persona,
+          coins: user.coins,
+          xp: user.xp,
         },
       },
     });

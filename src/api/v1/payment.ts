@@ -74,25 +74,32 @@ paymentRouter.post('/payos/webhook', async (c) => {
     if (!targetTx) return c.json({ success: false, error: 'Transaction not found' }, 404);
 
     if (status === 'PAID') {
-      await db.transaction(async (tx) => {
-        // Cập nhật trạng thái transaction
-        await tx.update(transactions)
-          .set({ status: 'completed' })
-          .where(eq(transactions.id, targetTx.id));
+      // Sử dụng db.batch() để thay thế db.transaction() nhằm tránh lỗi BEGIN TRANSACTION trên D1
+      const [user] = await db.select().from(users).where(eq(users.id, targetTx.user_id)).limit(1);
+      
+      const gemsToAdd = Math.floor(targetTx.amount / 100);
+      const batch = [];
 
-        // Cộng Gems cho user (Ví dụ: 1,000đ = 10 Gems)
-        const gemsToAdd = Math.floor(targetTx.amount / 100); 
-        
-        const [user] = await tx.select().from(users).where(eq(users.id, targetTx.user_id)).limit(1);
-        if (user) {
-          await tx.update(users)
+      // Cập nhật trạng thái transaction
+      batch.push(
+        db.update(transactions)
+          .set({ status: 'completed' })
+          .where(eq(transactions.id, targetTx.id))
+      );
+
+      // Cộng Gems cho user
+      if (user) {
+        batch.push(
+          db.update(users)
             .set({ 
               gems: (user.gems || 0) + gemsToAdd,
               updated_at: new Date()
             })
-            .where(eq(users.id, user.id));
-        }
-      });
+            .where(eq(users.id, user.id))
+        );
+      }
+
+      await db.batch(batch as any);
       return c.json({ success: true, message: 'Payment confirmed and Gems added' });
     }
 

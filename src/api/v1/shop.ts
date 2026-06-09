@@ -82,35 +82,36 @@ shopRouter.post('/buy', async (c) => {
     }
 
     // 3. Thực hiện giao dịch (Atomic)
-    await db.transaction(async (tx) => {
-      // Trừ tiền
-      await tx.update(users)
-        .set({ 
-          coins: (userData.coins ?? 0) - totalPriceCoins,
-          gems: (userData.gems ?? 0) - totalPriceGems,
-          updated_at: new Date()
-        })
-        .where(eq(users.id, userData.id));
+    // Sử dụng db.batch() để thay thế db.transaction() nhằm tránh lỗi BEGIN TRANSACTION trên D1
+    const [existing] = await db.select()
+      .from(userInventory)
+      .where(and(eq(userInventory.user_id, userData.id), eq(userInventory.item_id, itemId)))
+      .limit(1);
 
-      // Thêm vào kho đồ (Nếu đã có thì tăng số lượng)
-      const [existing] = await tx.select()
-        .from(userInventory)
-        .where(and(eq(userInventory.user_id, userData.id), eq(userInventory.item_id, itemId)))
-        .limit(1);
+    const updateMoney = db.update(users)
+      .set({ 
+        coins: (userData.coins ?? 0) - totalPriceCoins,
+        gems: (userData.gems ?? 0) - totalPriceGems,
+        updated_at: new Date()
+      })
+      .where(eq(users.id, userData.id));
 
-      if (existing && (item.item_type === 'booster' || item.item_type === 'protection')) {
-        await tx.update(userInventory)
-          .set({ quantity: existing.quantity + quantity, updated_at: new Date() })
-          .where(eq(userInventory.id, existing.id));
-      } else {
-        await tx.insert(userInventory).values({
-          user_id: userData.id,
-          item_id: itemId,
-          quantity: quantity,
-          is_equipped: false,
-        });
-      }
-    });
+    if (existing && (item.item_type === 'booster' || item.item_type === 'protection')) {
+      const updateInv = db.update(userInventory)
+        .set({ quantity: existing.quantity + quantity, updated_at: new Date() })
+        .where(eq(userInventory.id, existing.id));
+      
+      await db.batch([updateMoney, updateInv]);
+    } else {
+      const insertInv = db.insert(userInventory).values({
+        user_id: userData.id,
+        item_id: itemId,
+        quantity: quantity,
+        is_equipped: false,
+      });
+
+      await db.batch([updateMoney, insertInv]);
+    }
 
     return c.json({ success: true, message: 'Purchase successful' });
   } catch (error) {
@@ -124,67 +125,83 @@ shopRouter.post('/buy', async (c) => {
  * Trang bị vật phẩm (Avatar/Frame)
  */
 shopRouter.post('/equip', async (c) => {
-  const user = c.get('user') as any;
-  const { inventoryId } = await c.req.json();
-  const db = drizzle(c.env.DB);
+ const user = c.get('user') as any;
+ const { inventoryId } = await c.req.json();
+ const db = drizzle(c.env.DB);
 
-  try {
-    const [invItem] = await db
-      .select({
-        type: shopItems.item_type,
-        url: shopItems.image_url,
-        itemId: shopItems.id,
-        metadata: shopItems.metadata,
-      })
-      .from(userInventory)
-      .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))
-      .where(and(eq(userInventory.id, inventoryId), eq(userInventory.user_id, user.id)))
-      .limit(1);
+ try {
+   const [invItem] = await db
+     .select({
+       inventory_id: userInventory.id,
+       is_equipped: userInventory.is_equipped,
+       type: shopItems.item_type,
+       url: shopItems.image_url,
+       itemId: shopItems.id,
+       metadata: shopItems.metadata,
+     })
+     .from(userInventory)
+     .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))
+     .where(and(eq(userInventory.id, inventoryId), eq(userInventory.user_id, user.id)))
+     .limit(1);
 
-    if (!invItem) return c.json({ success: false, error: 'Item not owned' }, 404);
+   if (!invItem) return c.json({ success: false, error: 'Item not owned' }, 404);
 
-    await db.transaction(async (tx) => {
-      // 1. Tháo tất cả vật phẩm cùng loại hiện tại (Nếu là avatar/frame/booster)
-      if (invItem.type === 'avatar' || invItem.type === 'frame' || invItem.type === 'booster') {
-        const sameTypeItems = db
-          .select({ id: userInventory.id })
-          .from(userInventory)
-          .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))
-          .where(and(eq(userInventory.user_id, user.id), eq(shopItems.item_type, invItem.type)));
-        
-        await tx.update(userInventory)
-          .set({ is_equipped: false })
-          .where(sql`${userInventory.id} IN ${sameTypeItems}`);
-      }
+   const isUnequipping = invItem.is_equipped;
+   const batch = [];
 
-      // 2. Trang bị vật phẩm mới & Thiết lập ngày hết hạn nếu là Booster
-      let expiresAt = null;
-      if (invItem.type === 'booster') {
-        const metadata = invItem.metadata as any;
-        const durationHours = metadata?.duration_hours || 24;
-        expiresAt = new Date(Date.now() + durationHours * 60 * 60 * 1000);
-      }
+   // 1. Nếu đang trang bị (Equipping) -> Tháo tất cả vật phẩm cùng loại hiện tại
+   if (!isUnequipping && (invItem.type === 'avatar' || invItem.type === 'frame' || invItem.type === 'booster')) {
+     const sameTypeItems = db
+       .select({ id: userInventory.id })
+       .from(userInventory)
+       .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))
+       .where(and(eq(userInventory.user_id, user.id), eq(shopItems.item_type, invItem.type)));
 
-      await tx.update(userInventory)
-        .set({ 
-          is_equipped: true, 
-          expires_at: expiresAt,
-          updated_at: new Date() 
-        })
-        .where(eq(userInventory.id, inventoryId));
+     batch.push(
+       db.update(userInventory)
+         .set({ is_equipped: false })
+         .where(sql`${userInventory.id} IN ${sameTypeItems}`)
+     );
+   }
 
-      // 3. Cập nhật profile user
-      if (invItem.type === 'avatar') {
-        await tx.update(users).set({ avatar_url: invItem.url }).where(eq(users.id, user.id));
-      } else if (invItem.type === 'frame') {
-        await tx.update(users).set({ avatar_frame: invItem.url }).where(eq(users.id, user.id));
-      }
-    });
+   // 2. Cập nhật trạng thái của vật phẩm mục tiêu (Toggle)
+   let expiresAt = null;
+   if (!isUnequipping && invItem.type === 'booster') {
+     const metadata = invItem.metadata as any;
+     const durationHours = metadata?.duration_hours || 24;
+     expiresAt = new Date(Date.now() + durationHours * 60 * 60 * 1000);
+   }
 
-    return c.json({ success: true, message: 'Equipped successfully' });
-  } catch (error) {
-    return c.json({ success: false, error: 'Failed to equip item' }, 500);
-  }
+   batch.push(
+     db.update(userInventory)
+       .set({ 
+         is_equipped: !isUnequipping, 
+         expires_at: expiresAt,
+         updated_at: new Date() 
+       })
+       .where(eq(userInventory.id, inventoryId))
+   );
+
+   // 3. Cập nhật profile user
+   if (invItem.type === 'avatar') {
+     batch.push(db.update(users).set({ avatar_url: isUnequipping ? null : invItem.url }).where(eq(users.id, user.id)));
+   } else if (invItem.type === 'frame') {
+     batch.push(db.update(users).set({ avatar_frame: isUnequipping ? null : invItem.url }).where(eq(users.id, user.id)));
+   }
+
+   if (batch.length > 0) {
+     await db.batch(batch as any);
+   }
+
+   return c.json({ 
+     success: true, 
+     message: isUnequipping ? 'Unequipped successfully' : 'Equipped successfully',
+     is_equipped: !isUnequipping 
+   });
+ } catch (error) {
+   console.error('Equip error:', error);
+   return c.json({ success: false, error: 'Failed to toggle item' }, 500);
+ }
 });
 
 export default shopRouter;

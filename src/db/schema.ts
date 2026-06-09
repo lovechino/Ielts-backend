@@ -53,6 +53,7 @@ export const courses = sqliteTable('courses', {
   slug: text('slug').notNull().unique(),
   description: text('description'),
   thumbnail_url: text('thumbnail_url'),
+  price: real('price').default(0),
   level: text('level'), // A1, A2, B1, B2, C1, C2
   category: text('category').default('general'),
   order: integer('order').default(0),
@@ -248,6 +249,7 @@ export const speakingSessions = sqliteTable('speaking_sessions', {
   report: text('report', { mode: 'json' }),
   report_available_at: timestamp('report_available_at'),
   report_unlocked: integer('report_unlocked', { mode: 'boolean' }).default(false),
+  reward_claimed: integer('reward_claimed', { mode: 'boolean' }).default(false),
   started_at: timestamp('started_at').default(sql`CURRENT_TIMESTAMP`),
   ended_at: timestamp('ended_at'),
 });

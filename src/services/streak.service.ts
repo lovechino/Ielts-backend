@@ -191,25 +191,34 @@ export class StreakService {
     for (const user of toProtectUsers) {
       const item = protectedUserMap.get(user.id)!;
       
-      await this.db.transaction(async (tx) => {
-        // Giảm số lượng hoặc xóa nếu hết
-        if ((item.quantity ?? 0) > 1) {
-          await tx.update(userInventory)
-            .set({ quantity: (item.quantity ?? 0) - 1, updated_at: new Date() })
-            .where(eq(userInventory.id, item.inventory_id));
-        } else {
-          await tx.delete(userInventory)
-            .where(eq(userInventory.id, item.inventory_id));
-        }
+      // Sử dụng db.batch() để thay thế db.transaction() nhằm tránh lỗi BEGIN TRANSACTION trên D1
+      const batch = [];
 
-        // Insert activity giả cho 'today' để streak không bị reset
-        await tx.insert(dailyActivity).values({
+      // Giảm số lượng hoặc xóa nếu hết
+      if ((item.quantity ?? 0) > 1) {
+        batch.push(
+          this.db.update(userInventory)
+            .set({ quantity: (item.quantity ?? 0) - 1, updated_at: new Date() })
+            .where(eq(userInventory.id, item.inventory_id))
+        );
+      } else {
+        batch.push(
+          this.db.delete(userInventory)
+            .where(eq(userInventory.id, item.inventory_id))
+        );
+      }
+
+      // Insert activity giả cho 'today' để streak không bị reset
+      batch.push(
+        this.db.insert(dailyActivity).values({
           id: crypto.randomUUID(),
           user_id: user.id,
           activity_date: today,
           source: 'streak_freeze',
-        }).run();
-      });
+        })
+      );
+
+      await this.db.batch(batch as any);
     }
 
     return toResetUsers.length;

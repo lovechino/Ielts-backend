@@ -116,6 +116,7 @@ auth.post('/register', authRateLimit, async (c) => {
           email: newUser.email,
           full_name: newUser.full_name,
           role: newUser.role,
+          avatar_frame: newUser.avatar_frame,
         },
       },
     });
@@ -152,6 +153,12 @@ auth.post('/login', authRateLimit, async (c) => {
         email: user.email,
         full_name: user.full_name,
         role: user.role,
+        target_band: user.target_band,
+        avatar_url: user.avatar_url,
+        avatar_frame: user.avatar_frame,
+        ai_persona: user.ai_persona,
+        coins: user.coins,
+        xp: user.xp,
       },
     },
   });
@@ -246,6 +253,7 @@ auth.get('/me', async (c, next) => {
       role: user.role,
       target_band: user.target_band,
       avatar_url: user.avatar_url,
+      avatar_frame: user.avatar_frame,
       ai_persona: user.ai_persona,
       coins: user.coins,
       xp: user.xp,
@@ -299,6 +307,7 @@ auth.patch('/me', async (c, next) => {
         role: updatedUser.role,
         target_band: updatedUser.target_band,
         avatar_url: updatedUser.avatar_url,
+        avatar_frame: updatedUser.avatar_frame,
         ai_persona: updatedUser.ai_persona,
       },
     });

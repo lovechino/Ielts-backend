@@ -1,7 +1,7 @@
 import { D1Database } from '@cloudflare/workers-types';
 import { drizzle } from 'drizzle-orm/d1';
 import { userProgress, questions, lessons, passages, submissions, users, questionGroups } from '../db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import { AIService } from './ai.service';
 import { sendPushNotification } from './push.service';
 

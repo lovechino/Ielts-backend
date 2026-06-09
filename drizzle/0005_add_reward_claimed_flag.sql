@@ -1,3 +1,2 @@
--- Migration to add reward_claimed to progress and sessions
-ALTER TABLE `user_progress` ADD COLUMN `reward_claimed` integer DEFAULT 0;
+-- Migration to add reward_claimed to sessions
 ALTER TABLE `speaking_sessions` ADD COLUMN `reward_claimed` integer DEFAULT 0;
