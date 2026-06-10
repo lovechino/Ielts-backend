@@ -9,7 +9,7 @@ export class AdminContentService {
   constructor(private d1: D1Database, private cache: KVNamespace) {}
 
   async generateLessonContent(lessonId: string, rawText: string, lessonType: string, ai: any, jobId: string) {
-    const aiService = new AIService(ai);
+    const aiService = new AIService(ai, this.cache);
     const passageService = new PassageService(this.d1);
     const groupService = new QuestionGroupService(this.d1);
     const questionService = new QuestionService(this.d1);

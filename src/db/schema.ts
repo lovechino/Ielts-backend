@@ -12,6 +12,7 @@ export const users = sqliteTable('users', {
   full_name: text('full_name').notNull(),
   role: text('role').default('student'),
   tier: text('tier').default('free'),       // 'free' | 'premium'
+  has_completed_assessment: integer('has_completed_assessment', { mode: 'boolean' }).default(false),
   target_band: real('target_band'),
   avatar_url: text('avatar_url'),
   avatar_frame: text('avatar_frame'),       // For Shop
@@ -150,6 +151,7 @@ export const userProgress = sqliteTable('user_progress', {
   draft_answers: text('draft_answers', { mode: 'json' }),
   time_left: integer('time_left'),
   scoring_status: text('scoring_status').default('none'),
+  attempt_count: integer('attempt_count').default(0),
   full_result_unlocked: integer('full_result_unlocked', { mode: 'boolean' }).default(false),
   preview_score: real('preview_score'),
   result_available_at: timestamp('result_available_at'),
@@ -197,6 +199,15 @@ export const userVocabProgress = sqliteTable('user_vocab_progress', {
   reviewed_at: timestamp('reviewed_at').default(sql`CURRENT_TIMESTAMP`),
 }, (table) => ({
   userVocabUc: unique('_user_vocab_uc').on(table.user_id, table.vocab_id)
+}));
+
+export const userUnlockedBundles = sqliteTable('user_unlocked_bundles', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  bundle_id: text('bundle_id').notNull(),
+  unlocked_at: timestamp('unlocked_at').default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  userBundleUc: unique('_user_bundle_uc').on(table.user_id, table.bundle_id)
 }));
 
 export const userWordVault = sqliteTable('user_word_vault', {
@@ -259,6 +270,7 @@ export const speakingTurns = sqliteTable('speaking_turns', {
   session_id: text('session_id').notNull().references(() => speakingSessions.id, { onDelete: 'cascade' }),
   transcript: text('transcript'),
   ai_response: text('ai_response', { mode: 'json' }),
+  silence_metadata: text('silence_metadata', { mode: 'json' }),
   band_estimate: real('band_estimate'),
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
 });

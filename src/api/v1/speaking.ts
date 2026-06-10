@@ -3,8 +3,9 @@ import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, desc, and } from 'drizzle-orm';
 import type { Bindings } from '../../index';
-import { speakingSessions, speakingTurns, users, lessons, questionGroups, questions, passages } from '../../db/schema';
+import { speakingSessions, speakingTurns, users, lessons, questionGroups, questions, passages, userProgress } from '../../db/schema';
 import { aiRateLimit } from '../../middleware/rateLimit';
+import { sql } from 'drizzle-orm';
 import { sendPushNotification } from '../../services/push.service';
 import { processSpeakingReport } from '../../workers/speaking-consumer';
 
@@ -129,6 +130,58 @@ speakingRouter.post('/session/start', aiRateLimit, async (c) => {
     const { personaId, topic, part, lesson_id } = await c.req.json();
     const db = drizzle(c.env.DB);
     const sessionId = crypto.randomUUID();
+
+    const user = await db.select({ tier: users.tier }).from(users).where(eq(users.id, userId)).get();
+    const isPremium = user?.tier === 'premium';
+
+    // --- Giới hạn số lần làm bài (Attempt Limit) ---
+    if (lesson_id) {
+      const { count } = await import('drizzle-orm');
+      const stats = await db.select({ value: count() })
+        .from(speakingSessions)
+        .where(and(
+          eq(speakingSessions.user_id, userId),
+          eq(speakingSessions.lesson_id, lesson_id),
+          eq(speakingSessions.status, 'completed')
+        ))
+        .get();
+      
+      const limit = isPremium ? 100 : 1;
+      if (stats && (stats.value || 0) >= limit) {
+        return c.json({ success: false, error: `Bài học này đã hoàn thành. ${isPremium ? '' : 'Mỗi bài chỉ được làm 1 lần.'}` }, 403);
+      }
+    }
+
+    // --- Giới hạn ngày (Daily Limit) ---
+    if (!isPremium) {
+      const { count } = await import('drizzle-orm');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayTs = today.getTime();
+
+      const testDone = await db.select({ value: count() })
+        .from(userProgress)
+        .where(and(
+          eq(userProgress.user_id, userId),
+          eq(userProgress.status, 'completed'),
+          sql`${userProgress.completed_at} >= ${todayTs}`
+        ))
+        .get();
+
+      const speakingDone = await db.select({ value: count() })
+        .from(speakingSessions)
+        .where(and(
+          eq(speakingSessions.user_id, userId),
+          eq(speakingSessions.status, 'completed'),
+          sql`${speakingSessions.ended_at} >= ${todayTs}`
+        ))
+        .get();
+
+      const totalToday = (testDone?.value || 0) + (speakingDone?.value || 0);
+      if (totalToday >= 3) {
+        return c.json({ success: false, error: "Bạn đã đạt giới hạn nộp 3 bài mỗi ngày cho tài khoản Miễn phí." }, 403);
+      }
+    }
 
     let sessionTopic = topic;
     let partsList = part ? [parseInt(part)] : [1];
@@ -293,7 +346,7 @@ speakingRouter.post('/session/start', aiRateLimit, async (c) => {
 // 2. POST /session/turn
 speakingRouter.post('/session/turn', aiRateLimit, async (c) => {
   try {
-    const { sessionId, audio } = await c.req.json();
+    const { sessionId, audio, silenceMetadata } = await c.req.json();
     const db = drizzle(c.env.DB);
 
     const rawCtx = await c.env.CACHE.get(getKVKey(sessionId));
@@ -350,7 +403,8 @@ speakingRouter.post('/session/turn', aiRateLimit, async (c) => {
       id: crypto.randomUUID(),
       session_id: sessionId,
       transcript: transcript,
-      ai_response: JSON.stringify({ response: responseText })
+      ai_response: JSON.stringify({ response: responseText }),
+      silence_metadata: silenceMetadata ? JSON.stringify(silenceMetadata) : null
     }).run();
 
     await db.update(speakingSessions)

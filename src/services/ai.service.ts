@@ -2,9 +2,11 @@ import { Bindings } from '../index';
 
 export class AIService {
   private ai: any;
+  private cache: any;
 
-  constructor(ai: any) {
+  constructor(ai: any, cache?: any) {
     this.ai = ai;
+    this.cache = cache;
   }
 
   private cleanJsonString(str: string): string {
@@ -145,6 +147,82 @@ export class AIService {
   }
 
   /**
+   * Sinh nội dung Daily Challenge (Content Lab) từ văn bản thô
+   */
+  async generateDailyChallenge(rawText: string) {
+    const prompt = `
+      You are an expert IELTS content creator. Analyze the following English text and create a structured daily challenge for students.
+      
+      TEXT:
+      ${rawText}
+
+      INSTRUCTIONS:
+      1. Extract 5 academic or useful vocabulary words. For each word, provide:
+         - Word, IPA, Part of Speech.
+         - Clear definition in English.
+         - Vietnamese translation of the definition.
+         - An example sentence using the word.
+      2. Create 3 reading comprehension questions (Multiple Choice).
+         - Include the question, 4 options (A, B, C, D), correct answer, and a short explanation in English.
+      3. Identify 2 key grammar points found in the text.
+         - Title of the grammar point.
+         - Brief explanation.
+         - An example from the text or a similar one.
+      4. Provide a topic title and a short summary (1-2 sentences).
+
+      OUTPUT FORMAT (JSON ONLY):
+      {
+        "metadata": {
+          "topic": "string",
+          "summary": "string",
+          "difficulty": "Easy | Medium | Hard"
+        },
+        "vocabulary": [
+          { "word": "...", "ipa": "...", "pos": "...", "def_en": "...", "def_vi": "...", "example": "..." }
+        ],
+        "reading": {
+          "title": "...",
+          "text": "...",
+          "questions": [
+            { "q": "...", "options": ["A: ...", "B: ...", "C: ...", "D: ..."], "answer": "A | B | C | D", "explanation": "..." }
+          ]
+        },
+        "grammar": [
+          { "title": "...", "explanation": "...", "example": "..." }
+        ]
+      }
+
+      Respond only with raw JSON. No preamble.
+    `;
+
+    try {
+      const response = await this.ai.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+        messages: [
+          { role: 'system', content: 'You are a JSON generator. Output ONLY valid JSON.' },
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 3072
+      });
+
+      if (!response || !response.response) {
+        throw new Error('AI returned an empty response');
+      }
+
+      let jsonStr = response.response;
+      const startIdx = jsonStr.indexOf('{');
+      const endIdx = jsonStr.lastIndexOf('}');
+      if (startIdx !== -1 && endIdx !== -1) {
+        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+      }
+      let cleaned = this.cleanJsonString(jsonStr);
+      return JSON.parse(cleaned);
+    } catch (err) {
+      console.error('Daily Challenge Generation Error:', err);
+      throw err;
+    }
+  }
+
+  /**
    * Chấm điểm bài thi Writing dựa trên tiêu chí IELTS chuyên sâu
    */
   async gradeWriting(taskPrompt: string, studentAnswer: string, persona: string = 'james') {
@@ -197,7 +275,7 @@ export class AIService {
     `;
 
     try {
-      const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct', {
+      const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
         messages: [
           { role: 'system', content: 'You are an Expert IELTS Writing Scorer. Output ONLY valid JSON.' },
           { role: 'user', content: prompt }
@@ -309,7 +387,7 @@ export class AIService {
     `;
 
     try {
-      const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct', {
+      const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
         messages: [
           { role: 'system', content: 'You are an Expert IELTS Writing Scorer. Output ONLY valid JSON.' },
           { role: 'user', content: prompt }
@@ -339,21 +417,51 @@ export class AIService {
   }
 
   /**
-   * Sinh giải thích cho câu hỏi
+   * Sinh giải thích cho câu hỏi (có caching)
    */
-  async generateExplanation(passage: string, question: string, correctAnswer: string) {
+  async generateExplanation(passage: string, question: string, options: string[], correctAnswer: string, questionId?: string) {
+    // 1. Kiểm tra cache nếu có questionId
+    const cacheKey = questionId ? `explain:${questionId}:${correctAnswer}` : null;
+    if (this.cache && cacheKey) {
+      const cached = await this.cache.get(cacheKey);
+      if (cached) {
+        try {
+          return JSON.parse(cached);
+        } catch (e) {
+          return { explanation: cached, cached: true };
+        }
+      }
+    }
+
     const prompt = `
-      Passage: ${passage}
+      Passage: ${passage.slice(0, 2000)}
       Question: ${question}
+      Options: ${options.join(', ')}
       Correct Answer: ${correctAnswer}
       
-      Explain why the answer is correct based on the passage. Keep it concise (2-3 sentences).
+      Giải thích ngắn gọn (2-3 câu) tại sao đáp án này đúng dựa trên passage. Trả lời bằng tiếng Việt.
     `;
 
-    const response = await this.ai.run('@cf/meta/llama-3-8b-instruct', {
-      messages: [{ role: 'user', content: prompt }]
+    const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+      messages: [
+        { role: 'system', content: 'You are an IELTS tutor. Explain the correct answer concisely in Vietnamese.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 256
     });
 
-    return response.response;
+    const explanationText = response.response;
+    const result = {
+      explanation: explanationText,
+      generatedAt: new Date().toISOString(),
+      model: 'llama-3.1-8b-fp8'
+    };
+
+    // 2. Lưu vào cache (mãi mãi vì IELTS không đổi)
+    if (this.cache && cacheKey && explanationText) {
+      await this.cache.put(cacheKey, JSON.stringify(result));
+    }
+
+    return { ...result, cached: false };
   }
 }

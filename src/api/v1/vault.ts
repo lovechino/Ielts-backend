@@ -19,17 +19,6 @@ vaultRouter.use('/*', async (c, next) => {
   return jwt({ secret, alg: 'HS256' })(c, next);
 });
 
-// Premium guard
-vaultRouter.use('/*', async (c, next) => {
-  const payload = c.get('jwtPayload') as { sub: string };
-  const db = drizzle(c.env.DB);
-  const user = await db.select({ tier: users.tier }).from(users).where(eq(users.id, payload.sub)).get();
-  if (user?.tier !== 'premium') {
-    return c.json({ success: false, error: 'Premium required for vault sync' }, 403);
-  }
-  return next();
-});
-
 interface VaultItem {
   vocab_id: number;
   status: string;

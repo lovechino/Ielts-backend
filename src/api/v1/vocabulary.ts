@@ -2,11 +2,50 @@ import { Hono } from 'hono';
 import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { sql } from 'drizzle-orm';
-import { userVocabProgress } from '../../db/schema';
+import { userVocabProgress, userUnlockedBundles } from '../../db/schema';
 import { VocabularyService } from '../../services/vocabulary.service';
+import { eq } from 'drizzle-orm';
 import type { Bindings } from '../../index';
 
 const vocabRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
+
+// GET /api/v1/vocabulary/bundles/my — Lấy danh sách bundle đã mở khóa
+vocabRouter.get('/bundles/my', async (c, next) => {
+  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  return jwt({ secret, alg: 'HS256' })(c, next);
+}, async (c) => {
+  const payload = c.get('jwtPayload') as { sub: string };
+  const db = drizzle(c.env.DB);
+  
+  const unlocked = await db.select({ bundle_id: userUnlockedBundles.bundle_id })
+    .from(userUnlockedBundles)
+    .where(eq(userUnlockedBundles.user_id, payload.sub))
+    .all();
+    
+  return c.json({ success: true, data: unlocked.map(u => u.bundle_id) });
+});
+
+// POST /api/v1/vocabulary/bundles/unlock — Mở khóa bundle
+vocabRouter.post('/bundles/unlock', async (c, next) => {
+  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  return jwt({ secret, alg: 'HS256' })(c, next);
+}, async (c) => {
+  const payload = c.get('jwtPayload') as { sub: string };
+  const { bundle_id } = await c.req.json();
+  const db = drizzle(c.env.DB);
+
+  if (!bundle_id) return c.json({ success: false, error: 'bundle_id required' }, 400);
+
+  await db.insert(userUnlockedBundles)
+    .values({ 
+      id: crypto.randomUUID(), 
+      user_id: payload.sub, 
+      bundle_id 
+    })
+    .onConflictDoNothing();
+
+  return c.json({ success: true });
+});
 
 vocabRouter.get('/paths', async (c) => {
   const service = new VocabularyService(c.env.DB, c.env.CACHE);

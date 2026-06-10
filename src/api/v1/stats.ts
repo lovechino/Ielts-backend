@@ -92,17 +92,51 @@ statsRouter.get('/dashboard', async (c) => {
   const userId = payload.sub;
   const db = drizzle(c.env.DB);
 
-  const [total_vocab, vocab_learned, courses] = await Promise.all([
+  const [total_vocab, vocab_learned, courses, userRecord] = await Promise.all([
     fetchTotalVocab(db),
     fetchVocabLearned(db, userId),
     fetchCourseProgressStats(db, userId),
+    db.select({ tier: users.tier }).from(users).where(eq(users.id, userId)).get()
   ]);
 
+  const isPremium = userRecord?.tier === 'premium';
+  const dailyLimit = isPremium ? 100 : 3;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayTs = today.getTime();
+
+  const testDone = await db.select({ value: count() })
+    .from(userProgress)
+    .where(and(
+      eq(userProgress.user_id, userId),
+      eq(userProgress.status, 'completed'),
+      sql`${userProgress.completed_at} >= ${todayTs}`
+    ))
+    .get();
+
+  const speakingDone = await db.select({ value: count() })
+    .from(speakingSessions)
+    .where(and(
+      eq(speakingSessions.user_id, userId),
+      eq(speakingSessions.status, 'completed'),
+      sql`${speakingSessions.ended_at} >= ${todayTs}`
+    ))
+    .get();
+
+  const dailyCount = (testDone?.value || 0) + (speakingDone?.value || 0);
   const overall_progress_pct = computeOverallPct(courses);
 
   return c.json({
     success: true,
-    data: { total_vocab, vocab_learned, overall_progress_pct, courses },
+    data: { 
+      total_vocab, 
+      vocab_learned, 
+      overall_progress_pct, 
+      courses,
+      daily_limit: dailyLimit,
+      daily_submissions_count: dailyCount
+    },
   });
 });
 

@@ -117,6 +117,7 @@ auth.post('/register', authRateLimit, async (c) => {
           full_name: newUser.full_name,
           role: newUser.role,
           avatar_frame: newUser.avatar_frame,
+          has_completed_assessment: newUser.has_completed_assessment,
         },
       },
     });
@@ -157,6 +158,7 @@ auth.post('/login', authRateLimit, async (c) => {
         avatar_url: user.avatar_url,
         avatar_frame: user.avatar_frame,
         ai_persona: user.ai_persona,
+        has_completed_assessment: user.has_completed_assessment,
         coins: user.coins,
         xp: user.xp,
       },
@@ -255,6 +257,7 @@ auth.get('/me', async (c, next) => {
       avatar_url: user.avatar_url,
       avatar_frame: user.avatar_frame,
       ai_persona: user.ai_persona,
+      has_completed_assessment: user.has_completed_assessment,
       coins: user.coins,
       xp: user.xp,
       enrolled_courses: enrolledCourses,
@@ -272,7 +275,7 @@ auth.patch('/me', async (c, next) => {
   const db = drizzle(c.env.DB);
 
   const body = await c.req.json();
-  const allowedUpdates = ['full_name', 'target_band', 'avatar_url', 'ai_persona'];
+  const allowedUpdates = ['full_name', 'target_band', 'avatar_url', 'ai_persona', 'has_completed_assessment'];
   const updateData: Record<string, any> = {};
 
   for (const key of allowedUpdates) {
@@ -309,6 +312,7 @@ auth.patch('/me', async (c, next) => {
         avatar_url: updatedUser.avatar_url,
         avatar_frame: updatedUser.avatar_frame,
         ai_persona: updatedUser.ai_persona,
+        has_completed_assessment: updatedUser.has_completed_assessment,
       },
     });
   } catch (error: any) {

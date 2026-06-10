@@ -117,7 +117,7 @@ adminCourseRouter.post('/quick-import', async (c) => {
 // New: Preview AI Dry-run
 adminCourseRouter.post('/quick-import/preview', async (c) => {
   const body = await c.req.json() as { raw_text: string, lesson_type: string };
-  const aiService = new AIService(c.env.AI);
+  const aiService = new AIService(c.env.AI, c.env.CACHE);
   try {
     const parsed = await aiService.parseExamContent(body.raw_text, body.lesson_type);
     

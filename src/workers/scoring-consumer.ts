@@ -12,7 +12,7 @@ export async function scoringConsumer(batch: MessageBatch<any>, env: Bindings, c
       const user = { ai_persona: persona };
       const date = new Date(resultAvailableAt);
       
-      await service.runBackgroundScoring(userId, lessonId, answers, env.AI, user, progressId, date);
+      await service.runBackgroundScoring(userId, lessonId, answers, env, user, progressId, date);
       
       message.ack();
     } catch (err) {

@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
 import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
-import { vocabulary } from '../../db/schema';
+import { eq, inArray } from 'drizzle-orm';
+import { vocabulary, questions as questionsTable } from '../../db/schema';
 import type { Bindings } from '../../index';
+import { AIService } from '../../services/ai.service';
 
 const aiRouter = new Hono<{ Bindings: Bindings }>();
 
@@ -80,6 +81,129 @@ aiRouter.post('/pronunciation-check', async (c) => {
     console.error('AI Pronunciation Error:', error);
     return c.json({ success: false, message: 'AI processing failed', error: error.message }, 500);
   }
+});
+
+/**
+ * POST /api/v1/ai/explain
+ * Body: { question_id, passage?, question?, options?, correct_answer? }
+ */
+aiRouter.post('/explain', async (c) => {
+  const { question_id, passage, question, options, correct_answer } = await c.req.json();
+
+  if (!question_id && (!passage || !question || !correct_answer)) {
+    return c.json({ success: false, message: 'Missing required fields' }, 422);
+  }
+
+  const db = drizzle(c.env.DB);
+  const aiService = new AIService(c.env.AI, c.env.CACHE);
+
+  try {
+    let finalPassage = passage;
+    let finalQuestion = question;
+    let finalOptions = options || [];
+    let finalCorrectAnswer = correct_answer;
+
+    // Nếu có question_id, ưu tiên lấy từ DB để đảm bảo data chuẩn
+    if (question_id) {
+      const q = await db.select().from(questionsTable).where(eq(questionsTable.id, question_id)).get();
+      if (q) {
+        finalQuestion = q.content;
+        finalCorrectAnswer = q.correct_answer;
+        finalOptions = q.options ? (typeof q.options === 'string' ? JSON.parse(q.options) : q.options) : [];
+        
+        // Fetch passage via group
+        const { questionGroups, passages } = await import('../../db/schema');
+        if (q.group_id) {
+          const group = await db.select().from(questionGroups).where(eq(questionGroups.id, q.group_id)).get();
+          if (group?.passage_id) {
+            const p = await db.select().from(passages).where(eq(passages.id, group.passage_id)).get();
+            if (p) finalPassage = p.content_html;
+          }
+        }
+      }
+    }
+
+    const result = await aiService.generateExplanation(
+      finalPassage || '',
+      finalQuestion || '',
+      Array.isArray(finalOptions) ? finalOptions : [],
+      finalCorrectAnswer || '',
+      question_id
+    );
+
+    return c.json({ success: true, data: result });
+  } catch (error: any) {
+    console.error('AI Explain Error:', error);
+    return c.json({ success: false, message: 'AI processing failed' }, 500);
+  }
+});
+
+/**
+ * POST /api/v1/ai/explain/batch
+ * Body: { questions: [{ question_id, passage?, question?, options?, correct_answer? }] }
+ */
+aiRouter.post('/explain/batch', async (c) => {
+  const { questions: items } = await c.req.json();
+
+  if (!Array.isArray(items)) {
+    return c.json({ success: false, message: 'Invalid questions array' }, 422);
+  }
+
+  const db = drizzle(c.env.DB);
+  const aiService = new AIService(c.env.AI, c.env.CACHE);
+  
+  // 1. Lấy toàn bộ data từ DB trước nếu cần
+  const questionIds = items.map(i => i.question_id).filter(id => !!id);
+  let dbQuestions: any[] = [];
+  if (questionIds.length > 0) {
+    const { questions: qTable } = await import('../../db/schema');
+    const { inArray } = await import('drizzle-orm');
+    dbQuestions = await db.select().from(qTable).where(inArray(qTable.id, questionIds)).all();
+  }
+
+  // 2. Xử lý từng câu (có cache lo liệu bên trong AIService)
+  const results = await Promise.all(items.map(async (item) => {
+    let finalPassage = item.passage;
+    let finalQuestion = item.question;
+    let finalOptions = item.options || [];
+    let finalCorrectAnswer = item.correct_answer;
+
+    if (item.question_id) {
+      const q = dbQuestions.find(dq => dq.id === item.question_id);
+      if (q) {
+        finalQuestion = q.content;
+        finalCorrectAnswer = q.correct_answer;
+        finalOptions = q.options ? (typeof q.options === 'string' ? JSON.parse(q.options) : q.options) : [];
+        
+        // Fetch passage if missing
+        if (!finalPassage && q.group_id) {
+          const { questionGroups, passages } = await import('../../db/schema');
+          const group = await db.select().from(questionGroups).where(eq(questionGroups.id, q.group_id)).get();
+          if (group?.passage_id) {
+            const p = await db.select().from(passages).where(eq(passages.id, group.passage_id)).get();
+            if (p) finalPassage = p.content_html;
+          }
+        }
+      }
+    }
+
+    try {
+      return {
+        question_id: item.question_id,
+        ...(await aiService.generateExplanation(
+          finalPassage || '',
+          finalQuestion || '',
+          Array.isArray(finalOptions) ? finalOptions : [],
+          finalCorrectAnswer || '',
+          item.question_id
+        ))
+      };
+    } catch (e) {
+      return { question_id: item.question_id, error: 'Failed to generate' };
+    }
+  }));
+
+  return c.json({ success: true, data: results });
 });
 
 // Thuật toán so sánh đơn giản (Có thể nâng cấp lên phoneme level sau)

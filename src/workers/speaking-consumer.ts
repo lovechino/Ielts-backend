@@ -61,7 +61,12 @@ export async function processSpeakingReport(env: Bindings, sessionId: string, us
   const context = rawCtx ? JSON.parse(rawCtx) : { personaId: 'james', topic: 'Speaking test', part: 1 };
   
   const turnDetails = turns.map((t, i) => {
-    return `Turn ${i + 1}:\nExaminer Asked: "${JSON.parse(t.ai_response as string)?.response || 'N/A'}"\nCandidate Answered: "${t.transcript}"`;
+    const silence = t.silence_metadata ? (typeof t.silence_metadata === 'string' ? JSON.parse(t.silence_metadata) : t.silence_metadata) : null;
+    let silenceInfo = '';
+    if (silence) {
+      silenceInfo = ` (Silence: ${silence.totalSilenceMs || 0}ms, Mild Pauses: ${silence.mildPauseCount || 0}, Significant Pauses: ${silence.significantPauseCount || 0})`;
+    }
+    return `Turn ${i + 1}:\nExaminer Asked: "${JSON.parse(t.ai_response as string)?.response || 'N/A'}"\nCandidate Answered: "${t.transcript}"${silenceInfo}`;
   }).join('\n\n');
 
   const reportPrompt = `You are an expert IELTS Speaking examiner. Generate a consolidated speaking report.
@@ -94,7 +99,7 @@ STRICT JSON output:
   "nextSessionSuggestion": "Tiếng Việt suggestion"
 }`;
 
-  const aiRes = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+  const aiRes = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
     messages: [{ role: 'user', content: reportPrompt }],
     max_tokens: 3072
   });

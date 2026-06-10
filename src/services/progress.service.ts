@@ -1,7 +1,7 @@
 import { D1Database } from '@cloudflare/workers-types';
 import { drizzle } from 'drizzle-orm/d1';
-import { userProgress, questions, lessons, passages, submissions, users, questionGroups } from '../db/schema';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { userProgress, questions, lessons, passages, submissions, users, questionGroups, speakingSessions } from '../db/schema';
+import { eq, and, inArray, sql, count } from 'drizzle-orm';
 import { AIService } from './ai.service';
 import { sendPushNotification } from './push.service';
 
@@ -16,6 +16,59 @@ export class ProgressService {
   constructor(d1: D1Database) {
     this.d1 = d1;
     this.db = drizzle(d1);
+  }
+
+  /**
+   * Kiểm tra giới hạn:
+   * 1. Mỗi bài chỉ được làm 1 lần (status = completed). Premium được 100 lần.
+   * 2. Free user tối đa 3 bài/ngày.
+   */
+  private async _verifyLimits(userId: string, lessonId: string, isPremium: boolean) {
+    // 1. Check attempt limit
+    const existing = await this.db.select({ 
+      status: userProgress.status,
+      attempt_count: userProgress.attempt_count 
+    })
+      .from(userProgress)
+      .where(and(eq(userProgress.user_id, userId), eq(userProgress.lesson_id, lessonId)))
+      .get();
+    
+    const maxAttempts = isPremium ? 100 : 1;
+    if (existing?.status === 'completed' && (existing.attempt_count || 0) >= maxAttempts) {
+      throw new Error(`Bài học này đã hoàn thành. ${isPremium ? '' : 'Mỗi bài chỉ được làm 1 lần.'}`);
+    }
+
+    // 2. Daily limit for free users
+    if (!isPremium) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayTs = today.getTime();
+
+      // Đếm số bài test đã xong hôm nay
+      const testDone = await this.db.select({ value: count() })
+        .from(userProgress)
+        .where(and(
+          eq(userProgress.user_id, userId),
+          eq(userProgress.status, 'completed'),
+          sql`${userProgress.completed_at} >= ${todayTs}`
+        ))
+        .get();
+
+      // Đếm số bài speaking đã xong hôm nay
+      const speakingDone = await this.db.select({ value: count() })
+        .from(speakingSessions)
+        .where(and(
+          eq(speakingSessions.user_id, userId),
+          eq(speakingSessions.status, 'completed'),
+          sql`${speakingSessions.ended_at} >= ${todayTs}`
+        ))
+        .get();
+
+      const totalToday = (testDone?.value || 0) + (speakingDone?.value || 0);
+      if (totalToday >= 3) {
+        throw new Error("Bạn đã đạt giới hạn nộp 3 bài mỗi ngày cho tài khoản Miễn phí.");
+      }
+    }
   }
 
   async getProgress(userId: string, lessonId: string) {
@@ -104,10 +157,13 @@ export class ProgressService {
 
     let progress: any;
     if (existing) {
-      progress = await this.db.update(userProgress).set(data).where(eq(userProgress.id, existing.id)).returning().get();
+      progress = await this.db.update(userProgress)
+        .set({ ...data, attempt_count: sql`${userProgress.attempt_count} + 1` })
+        .where(eq(userProgress.id, existing.id))
+        .returning().get();
     } else {
       progress = await this.db.insert(userProgress)
-        .values({ id: crypto.randomUUID(), user_id: userId, lesson_id: lessonId, ...data })
+        .values({ id: crypto.randomUUID(), user_id: userId, lesson_id: lessonId, attempt_count: 1, ...data })
         .returning().get();
     }
 
@@ -139,13 +195,16 @@ export class ProgressService {
     const isPremium = user?.tier === 'premium';
     const isWriting = lesson.lesson_type === 'writing';
 
+    // --- Giới hạn số lần làm bài & Giới hạn ngày ---
+    await this._verifyLimits(userId, lessonId, isPremium);
+
     // Free + Writing → AI background, delay 7 phút
     if (isWriting && !isPremium) {
       return await this._submitWritingDeferred(userId, lessonId, answers, env, user, executionCtx);
     }
 
     // Chấm ngay (premium tất cả, hoặc free reading/listening)
-    const result = await this._submitAndScoreImmediate(userId, lessonId, answers, env.AI, user, lesson);
+    const result = await this._submitAndScoreImmediate(userId, lessonId, answers, env, user, lesson);
 
     // Free + Reading/Listening → delay hiển thị 2 phút
     if (!isPremium && !isWriting) {
@@ -219,12 +278,12 @@ export class ProgressService {
     let savedProgress: any;
     if (existing) {
       savedProgress = await this.db.update(userProgress)
-        .set(progressData)
+        .set({ ...progressData, attempt_count: sql`${userProgress.attempt_count} + 1` })
         .where(eq(userProgress.id, existing.id))
         .returning().get();
     } else {
       savedProgress = await this.db.insert(userProgress)
-        .values({ id: crypto.randomUUID(), user_id: userId, lesson_id: lessonId, ...progressData })
+        .values({ id: crypto.randomUUID(), user_id: userId, lesson_id: lessonId, attempt_count: 1, ...progressData })
         .returning().get();
     }
 
@@ -241,7 +300,7 @@ export class ProgressService {
       await env.SCORING_QUEUE.send(queueMsg);
     } else {
       console.warn('SCORING_QUEUE not bound, falling back to waitUntil');
-      const scoringTask = this.runBackgroundScoring(userId, lessonId, answers, env.AI, user, savedProgress.id, new Date(resultAvailableAt));
+      const scoringTask = this.runBackgroundScoring(userId, lessonId, answers, env, user, savedProgress.id, new Date(resultAvailableAt));
       if (executionCtx) {
         executionCtx.waitUntil(scoringTask);
       } else {
@@ -263,13 +322,13 @@ export class ProgressService {
     userId: string,
     lessonId: string,
     answers: { question_id: string; answer: string }[],
-    ai: any,
+    env: any,
     user: any,
     progressId: string,
     resultAvailableAt: Date
   ): Promise<void> {
     try {
-      const aiService = new AIService(ai);
+      const aiService = new AIService(env.AI, env.CACHE);
       const allPassages = await this.db.select().from(passages).where(eq(passages.lesson_id, lessonId)).all();
       const allGroups = await this.db.select().from(questionGroups).where(eq(questionGroups.lesson_id, lessonId)).all();
       const allQuestions = await this.db.select().from(questions).where(eq(questions.lesson_id, lessonId)).all();
@@ -384,11 +443,11 @@ export class ProgressService {
     userId: string,
     lessonId: string,
     answers: { question_id: string; answer: string }[],
-    ai: any,
+    env: any,
     user: any,
     lesson: any
   ) {
-    const aiService = new AIService(ai);
+    const aiService = new AIService(env.AI, env.CACHE);
     const allQuestions = await this.db.select().from(questions).where(eq(questions.lesson_id, lessonId)).all();
     const allPassages = await this.db.select().from(passages).where(eq(passages.lesson_id, lessonId)).all();
 
