@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, blob, unique } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, blob, unique, index } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 // Common helper for UUID primary keys
@@ -15,7 +15,7 @@ export const users = sqliteTable('users', {
   has_completed_assessment: integer('has_completed_assessment', { mode: 'boolean' }).default(false),
   target_band: real('target_band'),
   avatar_url: text('avatar_url'),
-  avatar_frame: text('avatar_frame'),       // For Shop
+  avatar_frame: text('avatar_frame'),       // Deprecated: avatar frames were removed from Shop
   is_active: integer('is_active', { mode: 'boolean' }).default(true),
   ai_persona: text('ai_persona').default('james'), // james, emily, dr_chen, sarah
   timezone: text('timezone').default('UTC'),
@@ -40,11 +40,35 @@ export const oauthAccounts = sqliteTable('oauth_accounts', {
 export const refreshTokens = sqliteTable('refresh_tokens', {
   id: uuid('id'),
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  selector: text('selector').unique(),
   token_hash: text('token_hash').notNull(),
   expires_at: timestamp('expires_at').notNull(),
   revoked_at: timestamp('revoked_at'),
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const paymentWebhookEvents = sqliteTable('payment_webhook_events', {
+  id: uuid('id'),
+  provider: text('provider').notNull(),
+  provider_event_id: text('provider_event_id').notNull().unique(),
+  user_id: text('user_id').references(() => users.id, { onDelete: 'set null' }),
+  event_type: text('event_type'),
+  processed_at: timestamp('processed_at').default(sql`CURRENT_TIMESTAMP`),
+  metadata: text('metadata', { mode: 'json' }),
+});
+
+export const adminAuditLogs = sqliteTable('admin_audit_logs', {
+  id: uuid('id'),
+  admin_id: text('admin_id').references(() => users.id, { onDelete: 'set null' }),
+  action: text('action').notNull(),
+  target_type: text('target_type'),
+  target_id: text('target_id'),
+  ip_address: text('ip_address'),
+  metadata: text('metadata', { mode: 'json' }),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  adminActionIdx: index('idx_admin_audit_action').on(table.admin_id, table.action),
+}));
 
 // --- Test Center Infrastructure (RESTORED) ---
 
@@ -189,7 +213,12 @@ export const vocabulary = sqliteTable('vocabulary', {
   level: text('level'),
   is_priority: integer('is_priority', { mode: 'boolean' }).default(false),
   is_academic: integer('is_academic', { mode: 'boolean' }).default(false),
-});
+  status: text('status').default('published'), // draft, published
+  updated_at: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
+  is_deleted: integer('is_deleted').default(0),
+}, (table) => ({
+  vocabSyncIdx: index('idx_vocab_sync').on(table.status, table.updated_at),
+}));
 
 export const userVocabProgress = sqliteTable('user_vocab_progress', {
   id: uuid('id'),
@@ -315,7 +344,7 @@ export const shopItems = sqliteTable('shop_items', {
   id: uuid('id'),
   name: text('name').notNull(),
   description: text('description'),
-  item_type: text('item_type').notNull(), // avatar, frame, booster, protection
+  item_type: text('item_type').notNull(), // avatar, booster, protection, expansion
   sub_type: text('sub_type').default('static'), // static, animated
   rarity: text('rarity').default('common'), // common, rare, epic, legendary
   price_coins: integer('price_coins').default(0),
@@ -337,3 +366,32 @@ export const userInventory = sqliteTable('user_inventory', {
   updated_at: timestamp('updated_at').default(sql`CURRENT_TIMESTAMP`),
 });
 
+// --- Vocabulary Contribution System ---
+
+export const vocabContributions = sqliteTable('vocab_contributions', {
+  id: uuid('id'),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  word: text('word').notNull(),
+  phonetic: text('phonetic'),
+  part_of_speech: text('part_of_speech'),
+  definition: text('definition'),
+  definition_vi: text('definition_vi'),
+  example: text('example'),
+  example_vi: text('example_vi'),
+  // 'user' = user typed manually, 'ai_lookup' = filled from AI/Dictionary API
+  source: text('source').default('user'),
+  // 'pending' | 'approved' | 'rejected' | 'duplicate' | 'needs_review'
+  status: text('status').default('pending'),
+  // Tổng xu đã trả cho contribution này (tránh double-pay)
+  reward_paid: integer('reward_paid').default(0),
+  // Điểm tự động của auto-reviewer (0-100)
+  auto_score: integer('auto_score'),
+  // Ghi chú của admin khi duyệt/từ chối
+  admin_note: text('admin_note'),
+  reviewed_by: text('reviewed_by').references(() => users.id, { onDelete: 'set null' }),
+  reviewed_at: timestamp('reviewed_at'),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  // Mỗi user chỉ đóng góp 1 lần cho mỗi từ
+  userWordUc: unique('_contrib_user_word_uc').on(table.user_id, table.word),
+}));

@@ -1,8 +1,4 @@
 import { Hono } from 'hono';
-import { jwt } from 'hono/jwt';
-import { drizzle } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
-import { users } from '../../../db/schema';
 import { CourseService } from '../../../services/course.service';
 import { LessonService } from '../../../services/lesson.service';
 import { QuestionService } from '../../../services/question.service';
@@ -12,38 +8,22 @@ import { AIService } from '../../../services/ai.service';
 import { JobService } from '../../../services/job.service';
 import { AdminContentService } from '../../../services/admin-content.service';
 import type { Bindings, Variables } from '../../../index';
+import { adminGuard } from '../../../middleware/auth';
+import { writeAdminAuditLog } from '../../../services/admin-audit.service';
 
 const adminCourseRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>({ strict: false });
 
-adminCourseRouter.use('/*', async (c, next) => {
-  if (c.env.ENABLE_ADMIN !== 'true') {
-    return c.json({ success: false, error: 'Not found' }, 404);
-  }
-  return next();
-});
-
-adminCourseRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
-  const jwtMiddleware = jwt({ secret, alg: 'HS256' });
-  return jwtMiddleware(c, next);
-});
-
-adminCourseRouter.use('/*', async (c, next) => {
-  const payload = c.get('jwtPayload') as { sub: string; role?: string };
-  if (payload.role !== 'admin') {
-    const db = drizzle(c.env.DB);
-    const user = await db.select({ role: users.role }).from(users).where(eq(users.id, payload.sub)).get();
-    if (user?.role !== 'admin') {
-      return c.json({ success: false, error: 'Forbidden: admin access required' }, 403);
-    }
-  }
-  return next();
-});
+adminCourseRouter.use('/*', adminGuard);
 
 adminCourseRouter.post('/', async (c) => {
   const body = await c.req.json();
   const service = new CourseService(c.env.DB);
   const course = await service.create(body);
+  await writeAdminAuditLog(c, 'test_set.create', {
+    targetType: 'course',
+    targetId: course?.id,
+    metadata: { title: body.title },
+  });
   return c.json({ success: true, data: course });
 });
 
@@ -52,6 +32,11 @@ adminCourseRouter.post('/lessons', async (c) => {
   const body = await c.req.json();
   const service = new LessonService(c.env.DB);
   const lesson = await service.create(body);
+  await writeAdminAuditLog(c, 'lesson.create', {
+    targetType: 'lesson',
+    targetId: lesson?.id,
+    metadata: { title: body.title, course_id: body.course_id },
+  });
   return c.json({ success: true, data: lesson });
 });
 
@@ -104,6 +89,12 @@ adminCourseRouter.post('/quick-import', async (c) => {
   c.executionCtx.waitUntil(
     adminContentService.generateLessonContent(lesson.id, body.raw_text, body.lesson_type, c.env.AI, jobId)
   );
+
+  await writeAdminAuditLog(c, 'lesson.quick_import', {
+    targetType: 'lesson',
+    targetId: lesson.id,
+    metadata: { title: body.title, course_id: targetCourseId, job_id: jobId },
+  });
 
   return c.json({
     success: true,
@@ -163,6 +154,11 @@ adminCourseRouter.post('/:course_id/lessons', async (c) => {
   if (Array.isArray(body)) {
     const lessonsWithCourseId = body.map(item => ({ ...item, course_id: courseId }));
     const result = await service.createMany(lessonsWithCourseId);
+    await writeAdminAuditLog(c, 'lesson.bulk_create', {
+      targetType: 'course',
+      targetId: courseId,
+      metadata: { count: body.length },
+    });
     return c.json({ success: true, data: result });
   } else {
     const incomingCourseId = body.courseId || body.course_id;
@@ -171,6 +167,11 @@ adminCourseRouter.post('/:course_id/lessons', async (c) => {
     }
     const lessonData = { ...body, course_id: courseId };
     const lesson = await service.create(lessonData);
+    await writeAdminAuditLog(c, 'lesson.create', {
+      targetType: 'lesson',
+      targetId: lesson?.id,
+      metadata: { title: body.title, course_id: courseId },
+    });
     return c.json({ success: true, data: lesson });
   }
 });
@@ -183,6 +184,11 @@ adminCourseRouter.put('/lessons/:lesson_id', async (c) => {
   if (!lesson) {
     return c.json({ success: false, error: { message: 'Lesson not found' } }, 404);
   }
+  await writeAdminAuditLog(c, 'lesson.update', {
+    targetType: 'lesson',
+    targetId: lessonId,
+    metadata: { fields: Object.keys(body) },
+  });
   return c.json({ success: true, data: lesson });
 });
 
@@ -193,6 +199,10 @@ adminCourseRouter.delete('/lessons/:lesson_id', async (c) => {
   if (!deleted) {
     return c.json({ success: false, error: { message: 'Lesson not found' } }, 404);
   }
+  await writeAdminAuditLog(c, 'lesson.delete', {
+    targetType: 'lesson',
+    targetId: lessonId,
+  });
   return c.json({ success: true, data: { deleted: true } });
 });
 
@@ -201,6 +211,11 @@ adminCourseRouter.post('/lessons/:lesson_id/passages', async (c) => {
   const body = await c.req.json();
   const service = new PassageService(c.env.DB);
   const passage = await service.create({ ...body, lesson_id: lessonId });
+  await writeAdminAuditLog(c, 'passage.create', {
+    targetType: 'passage',
+    targetId: passage?.id,
+    metadata: { lesson_id: lessonId, title: body.title },
+  });
   return c.json({ success: true, data: passage });
 });
 
@@ -210,6 +225,11 @@ adminCourseRouter.put('/passages/:passage_id', async (c) => {
   const service = new PassageService(c.env.DB);
   const passage = await service.update(passageId, body);
   if (!passage) return c.json({ success: false, error: { message: 'Passage not found' } }, 404);
+  await writeAdminAuditLog(c, 'passage.update', {
+    targetType: 'passage',
+    targetId: passageId,
+    metadata: { fields: Object.keys(body) },
+  });
   return c.json({ success: true, data: passage });
 });
 
@@ -217,6 +237,10 @@ adminCourseRouter.delete('/passages/:passage_id', async (c) => {
   const passageId = c.req.param('passage_id');
   const service = new PassageService(c.env.DB);
   await service.delete(passageId);
+  await writeAdminAuditLog(c, 'passage.delete', {
+    targetType: 'passage',
+    targetId: passageId,
+  });
   return c.json({ success: true, data: { deleted: true } });
 });
 
@@ -225,6 +249,11 @@ adminCourseRouter.post('/lessons/:lesson_id/question-groups', async (c) => {
   const body = await c.req.json();
   const service = new QuestionGroupService(c.env.DB);
   const group = await service.create({ ...body, lesson_id: lessonId });
+  await writeAdminAuditLog(c, 'question_group.create', {
+    targetType: 'question_group',
+    targetId: group?.id,
+    metadata: { lesson_id: lessonId, group_type: body.group_type },
+  });
   return c.json({ success: true, data: group });
 });
 
@@ -234,6 +263,11 @@ adminCourseRouter.put('/question-groups/:group_id', async (c) => {
   const service = new QuestionGroupService(c.env.DB);
   const group = await service.update(groupId, body);
   if (!group) return c.json({ success: false, error: { message: 'Question group not found' } }, 404);
+  await writeAdminAuditLog(c, 'question_group.update', {
+    targetType: 'question_group',
+    targetId: groupId,
+    metadata: { fields: Object.keys(body) },
+  });
   return c.json({ success: true, data: group });
 });
 
@@ -241,6 +275,10 @@ adminCourseRouter.delete('/question-groups/:group_id', async (c) => {
   const groupId = c.req.param('group_id');
   const service = new QuestionGroupService(c.env.DB);
   await service.delete(groupId);
+  await writeAdminAuditLog(c, 'question_group.delete', {
+    targetType: 'question_group',
+    targetId: groupId,
+  });
   return c.json({ success: true, data: { deleted: true } });
 });
 
@@ -250,6 +288,11 @@ adminCourseRouter.post('/lessons/:lesson_id/questions', async (c) => {
   const service = new QuestionService(c.env.DB);
   // Always inject lesson_id from URL — body may omit it
   const question = await service.create({ ...body, lesson_id: lessonId });
+  await writeAdminAuditLog(c, 'question.create', {
+    targetType: 'question',
+    targetId: question?.id,
+    metadata: { lesson_id: lessonId, question_type: body.question_type },
+  });
   return c.json({ success: true, data: question });
 });
 
@@ -275,6 +318,12 @@ adminCourseRouter.post('/lessons/:lesson_id/auto-generate', async (c) => {
   c.executionCtx.waitUntil(
     adminContentService.generateLessonContent(lessonId, raw_text, lessonType, c.env.AI, jobId)
   );
+
+  await writeAdminAuditLog(c, 'lesson.auto_generate', {
+    targetType: 'lesson',
+    targetId: lessonId,
+    metadata: { job_id: jobId, lesson_type: lessonType },
+  });
 
   return c.json({ success: true, data: { job_id: jobId } }, 202);
 });

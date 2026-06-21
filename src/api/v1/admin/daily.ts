@@ -1,10 +1,14 @@
 import { Hono } from 'hono';
 import { drizzle } from 'drizzle-orm/d1';
 import { dailyChallenges } from '../../../db/schema';
-import type { Bindings } from '../../../index';
+import type { Bindings, Variables } from '../../../index';
 import { AIService } from '../../../services/ai.service';
+import { adminGuard } from '../../../middleware/auth';
+import { writeAdminAuditLog } from '../../../services/admin-audit.service';
 
-const adminDailyRouter = new Hono<{ Bindings: Bindings }>();
+const adminDailyRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>();
+
+adminDailyRouter.use('/*', adminGuard);
 
 // POST /api/v1/admin/daily/generate - Generate challenge from raw text
 adminDailyRouter.post('/generate', async (c) => {
@@ -54,6 +58,12 @@ adminDailyRouter.post('/push', async (c) => {
         }
       })
       .run();
+
+    await writeAdminAuditLog(c, 'daily_challenge.push', {
+      targetType: 'daily_challenge',
+      targetId: date,
+      metadata: { topic: content.metadata?.topic || 'General' },
+    });
 
     return c.json({ success: true, message: `Challenge for ${date} pushed successfully` });
   } catch (error: any) {

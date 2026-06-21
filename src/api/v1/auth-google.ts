@@ -5,6 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { users, oauthAccounts } from '../../db/schema';
 import bcrypt from 'bcryptjs';
 import { Bindings, Variables } from '../../index';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const googleAuth = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 
@@ -16,6 +17,18 @@ function decodeIdToken(idToken: string): Record<string, any> {
   const decodedStr = decodeURIComponent(escape(atob(payloadBase64)));
   return JSON.parse(decodedStr);
 }
+
+const randomToken = () => {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+
+const createRefreshToken = () => {
+  const selector = randomToken().slice(0, 24);
+  const validator = randomToken();
+  return { selector, validator, raw: `${selector}.${validator}` };
+};
 
 async function findOrCreateUser(
   db: ReturnType<typeof drizzle>,
@@ -36,7 +49,7 @@ async function findOrCreateUser(
 
   if (existingLink) {
     await db.update(users)
-      .set({ avatar_url: avatarUrl, full_name: name, updated_at: new Date() })
+      .set({ avatar_url: avatarUrl, full_name: name, is_active: true, updated_at: new Date() })
       .where(eq(users.id, existingLink.user_id))
       .run();
     return existingLink.user_id;
@@ -54,7 +67,7 @@ async function findOrCreateUser(
       provider_id: googleId,
     }).run();
     await db.update(users)
-      .set({ avatar_url: avatarUrl, updated_at: new Date() })
+      .set({ avatar_url: avatarUrl, is_active: true, updated_at: new Date() })
       .where(eq(users.id, existingUser.id))
       .run();
     return existingUser.id;
@@ -154,6 +167,7 @@ googleAuth.post('/', async (c) => {
     }
 
     // Access token ngắn hạn (15 phút) — giống email/password auth
+    const jwtSecret = requireJwtSecret(c);
     const accessToken = await sign(
       {
         sub: user.id,
@@ -161,17 +175,18 @@ googleAuth.post('/', async (c) => {
         role: user.role,
         exp: Math.floor(Date.now() / 1000) + 60 * 15,
       },
-      c.env.JWT_SECRET
+      jwtSecret
     );
 
     // Refresh token dài hạn (30 ngày) — lưu vào DB để hỗ trợ silent refresh
     const { refreshTokens } = await import('../../db/schema');
-    const refreshTokenValue = crypto.randomUUID();
-    const tokenHash = await bcrypt.hash(refreshTokenValue, 10);
+    const refreshToken = createRefreshToken();
+    const tokenHash = await bcrypt.hash(refreshToken.validator, 10);
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     await db.insert(refreshTokens).values({
       id: crypto.randomUUID(),
       user_id: user.id,
+      selector: refreshToken.selector,
       token_hash: tokenHash,
       expires_at: expiresAt,
     }).run();
@@ -180,7 +195,7 @@ googleAuth.post('/', async (c) => {
       success: true,
       data: {
         token: accessToken,
-        refresh_token: refreshTokenValue,
+        refresh_token: refreshToken.raw,
         user: {
           id: user.id,
           email: user.email,
@@ -285,6 +300,7 @@ googleAuth.get('/callback', async (c) => {
 
     const user = await db.select().from(users).where(eq(users.id, userId)).get();
 
+    const jwtSecret = requireJwtSecret(c);
     const accessToken = await sign(
       {
         sub: user!.id,
@@ -292,17 +308,18 @@ googleAuth.get('/callback', async (c) => {
         role: user!.role,
         exp: Math.floor(Date.now() / 1000) + 60 * 15,
       },
-      c.env.JWT_SECRET
+      jwtSecret
     );
 
     // Refresh token dài hạn (30 ngày)
     const { refreshTokens } = await import('../../db/schema');
-    const refreshTokenValue = crypto.randomUUID();
-    const tokenHash = await bcrypt.hash(refreshTokenValue, 10);
+    const refreshToken = createRefreshToken();
+    const tokenHash = await bcrypt.hash(refreshToken.validator, 10);
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     await db.insert(refreshTokens).values({
       id: crypto.randomUUID(),
       user_id: user!.id,
+      selector: refreshToken.selector,
       token_hash: tokenHash,
       expires_at: expiresAt,
     }).run();
@@ -311,7 +328,7 @@ googleAuth.get('/callback', async (c) => {
     const frontendUrl = c.env.FRONTEND_URL || 'http://localhost:8081';
 
     return buildRedirectRes(
-      `${frontendUrl}/auth/callback?token=${encodeURIComponent(accessToken)}&refresh_token=${encodeURIComponent(refreshTokenValue)}`,
+      `${frontendUrl}/auth/callback?token=${encodeURIComponent(accessToken)}&refresh_token=${encodeURIComponent(refreshToken.raw)}`,
       { name: 'google_oauth_state', value: '', maxAge: 0 }
     );
   } catch (err: any) {

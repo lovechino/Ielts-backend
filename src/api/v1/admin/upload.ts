@@ -1,36 +1,22 @@
 import { Hono } from 'hono';
-import { jwt } from 'hono/jwt';
-import { drizzle } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
-import { users } from '../../../db/schema';
-import type { Bindings } from '../../../index';
+import type { Bindings, Variables } from '../../../index';
+import { adminGuard } from '../../../middleware/auth';
+import { writeAdminAuditLog } from '../../../services/admin-audit.service';
 
-const adminUploadRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
+const adminUploadRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>({ strict: false });
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const ALLOWED_UPLOAD_TYPES = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/webp', 'webp'],
+  ['image/gif', 'gif'],
+  ['audio/mpeg', 'mp3'],
+  ['audio/wav', 'wav'],
+  ['audio/x-wav', 'wav'],
+  ['audio/mp4', 'm4a'],
+]);
 
-adminUploadRouter.use('/*', async (c, next) => {
-  if (c.env.ENABLE_ADMIN !== 'true') {
-    return c.json({ success: false, error: 'Not found' }, 404);
-  }
-  return next();
-});
-
-adminUploadRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
-  const jwtMiddleware = jwt({ secret, alg: 'HS256' });
-  return jwtMiddleware(c, next);
-});
-
-adminUploadRouter.use('/*', async (c, next) => {
-  const payload = c.get('jwtPayload') as { sub: string; role?: string };
-  if (payload.role !== 'admin') {
-    const db = drizzle(c.env.DB);
-    const user = await db.select({ role: users.role }).from(users).where(eq(users.id, payload.sub)).get();
-    if (user?.role !== 'admin') {
-      return c.json({ success: false, error: 'Forbidden: admin access required' }, 403);
-    }
-  }
-  return next();
-});
+adminUploadRouter.use('/*', adminGuard);
 
 adminUploadRouter.post('/', async (c) => {
   const formData = await c.req.formData();
@@ -40,8 +26,22 @@ adminUploadRouter.post('/', async (c) => {
     return c.json({ success: false, error: { message: 'No file provided' } }, 400);
   }
 
-  const ext = file.name.split('.').pop();
-  const uniqueFilename = `${crypto.randomUUID()}.${ext}`;
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return c.json({ success: false, error: { message: 'File too large' } }, 413);
+  }
+
+  const safeExt = ALLOWED_UPLOAD_TYPES.get(file.type);
+  if (!safeExt) {
+    return c.json({ success: false, error: { message: 'Unsupported file type' } }, 415);
+  }
+
+  const originalExt = String(file.name || '').split('.').pop()?.toLowerCase();
+  const ext = originalExt === 'jpeg' ? 'jpg' : originalExt;
+  if (ext && ext !== safeExt) {
+    return c.json({ success: false, error: { message: 'File extension does not match content type' } }, 400);
+  }
+
+  const uniqueFilename = `${crypto.randomUUID()}.${safeExt}`;
 
   try {
     await c.env.MY_BUCKET.put(uniqueFilename, await (file as any).arrayBuffer(), {
@@ -50,6 +50,12 @@ adminUploadRouter.post('/', async (c) => {
 
     const origin = new URL(c.req.url).origin;
     const fileUrl = `${origin}/api/v1/upload/files/${uniqueFilename}`;
+
+    await writeAdminAuditLog(c, 'upload.create', {
+      targetType: 'r2_object',
+      targetId: uniqueFilename,
+      metadata: { originalName: file.name, contentType: file.type, size: file.size },
+    });
 
     return c.json({
       success: true,

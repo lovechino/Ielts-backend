@@ -4,6 +4,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import { eq, and, sql } from 'drizzle-orm';
 import { dailyChallenges, userChallengeCompletion, users } from '../../db/schema';
 import type { Bindings } from '../../index';
+import { requireJwtSecret } from '../../middleware/auth';
 
 import { ChallengeService } from '../../services/challenge.service';
 
@@ -11,7 +12,7 @@ const dailyRouter = new Hono<{ Bindings: Bindings }>();
 
 // Auth middleware
 dailyRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 });
 

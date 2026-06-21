@@ -1,35 +1,15 @@
 import { Hono } from 'hono';
-import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
-import { shopItems, users } from '../../../db/schema';
-import { eq, desc } from 'drizzle-orm';
-import type { Bindings } from '../../../index';
+import { shopItems } from '../../../db/schema';
+import { eq, desc, ne } from 'drizzle-orm';
+import type { Bindings, Variables } from '../../../index';
+import { adminGuard } from '../../../middleware/auth';
+import { writeAdminAuditLog } from '../../../services/admin-audit.service';
 
-const adminShopRouter = new Hono<{ Bindings: Bindings }>();
+const adminShopRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>();
+const ALLOWED_SHOP_ITEM_TYPES = new Set(['avatar', 'booster', 'protection', 'expansion']);
 
-adminShopRouter.use('/*', async (c, next) => {
-  if (c.env.ENABLE_ADMIN !== 'true') {
-    return c.json({ success: false, error: 'Not found' }, 404);
-  }
-  return next();
-});
-
-adminShopRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
-  return jwt({ secret, alg: 'HS256' })(c, next);
-});
-
-adminShopRouter.use('/*', async (c, next) => {
-  const payload = c.get('jwtPayload') as { sub: string; role?: string };
-  if (payload.role !== 'admin') {
-    const db = drizzle(c.env.DB);
-    const user = await db.select({ role: users.role }).from(users).where(eq(users.id, payload.sub)).get();
-    if (user?.role !== 'admin') {
-      return c.json({ success: false, error: 'Forbidden: admin access required' }, 403);
-    }
-  }
-  return next();
-});
+adminShopRouter.use('/*', adminGuard);
 
 /**
  * GET /api/v1/admin/shop/items
@@ -38,7 +18,10 @@ adminShopRouter.use('/*', async (c, next) => {
 adminShopRouter.get('/items', async (c) => {
   const db = drizzle(c.env.DB);
   try {
-    const items = await db.select().from(shopItems).orderBy(desc(shopItems.created_at));
+    const items = await db.select()
+      .from(shopItems)
+      .where(ne(shopItems.item_type, 'frame'))
+      .orderBy(desc(shopItems.created_at));
     return c.json({ success: true, data: items });
   } catch (error) {
     return c.json({ success: false, error: 'Failed to fetch items' }, 500);
@@ -53,6 +36,10 @@ adminShopRouter.post('/items', async (c) => {
   const db = drizzle(c.env.DB);
   try {
     const body = await c.req.json();
+    if (!ALLOWED_SHOP_ITEM_TYPES.has(body.item_type)) {
+      return c.json({ success: false, error: 'Unsupported shop item type' }, 400);
+    }
+
     const newItem = {
       id: crypto.randomUUID(),
       name: body.name,
@@ -69,6 +56,11 @@ adminShopRouter.post('/items', async (c) => {
     };
 
     await db.insert(shopItems).values(newItem);
+    await writeAdminAuditLog(c, 'shop_item.create', {
+      targetType: 'shop_item',
+      targetId: newItem.id,
+      metadata: { name: newItem.name, item_type: newItem.item_type },
+    });
     return c.json({ success: true, data: newItem });
   } catch (error) {
     return c.json({ success: false, error: 'Failed to create item' }, 500);
@@ -84,12 +76,22 @@ adminShopRouter.patch('/items/:id', async (c) => {
   const db = drizzle(c.env.DB);
   try {
     const body = await c.req.json();
+    if (body.item_type !== undefined && !ALLOWED_SHOP_ITEM_TYPES.has(body.item_type)) {
+      return c.json({ success: false, error: 'Unsupported shop item type' }, 400);
+    }
+
     await db.update(shopItems)
       .set({
         ...body,
         created_at: undefined, // Không cho phép đổi ngày tạo
       })
       .where(eq(shopItems.id, id));
+
+    await writeAdminAuditLog(c, 'shop_item.update', {
+      targetType: 'shop_item',
+      targetId: id,
+      metadata: { fields: Object.keys(body) },
+    });
     
     return c.json({ success: true, message: 'Updated successfully' });
   } catch (error) {
@@ -106,6 +108,10 @@ adminShopRouter.delete('/items/:id', async (c) => {
   const db = drizzle(c.env.DB);
   try {
     await db.delete(shopItems).where(eq(shopItems.id, id));
+    await writeAdminAuditLog(c, 'shop_item.delete', {
+      targetType: 'shop_item',
+      targetId: id,
+    });
     return c.json({ success: true, message: 'Deleted successfully' });
   } catch (error) {
     return c.json({ success: false, error: 'Failed to delete item' }, 500);

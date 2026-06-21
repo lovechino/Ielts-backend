@@ -18,6 +18,7 @@ import vaultRouter from './vault';
 import shopRouter from './shop';
 import paymentRouter from './payment';
 import assetsRouter from './assets';
+import contributionsRouter from './contributions';
 
 v1Router.route('/test-sets', testSetRouter);
 v1Router.route('/vocabulary', vocabRouter);
@@ -34,6 +35,7 @@ v1Router.route('/vault', vaultRouter);
 v1Router.route('/shop', shopRouter);
 v1Router.route('/payment', paymentRouter);
 v1Router.route('/assets', assetsRouter);
+v1Router.route('/vault', contributionsRouter); // /vault/contribute, /vault/contributions
 
 // Admin routes (mounted at /admin subpath — guarded by ENABLE_ADMIN env + JWT + role check)
 import { adminTestSetRouter, adminVocabRouter, adminUploadRouter, adminDailyRouter, adminStatsRouter, adminShopRouter, adminUserRouter } from './admin';

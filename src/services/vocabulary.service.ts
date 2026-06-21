@@ -96,18 +96,69 @@ export class VocabularyService {
 
   async upsertVocabulary(data: any) {
     const existing = await this.db.select().from(vocabulary).where(eq(vocabulary.word, data.word)).get();
+    const now = Math.floor(Date.now() / 1000);
     if (existing) {
-      await this.db.update(vocabulary).set(data).where(eq(vocabulary.id, existing.id)).run();
-      return { ...existing, ...data };
+      const updateData = { ...data, updated_at: now };
+      await this.db.update(vocabulary).set(updateData).where(eq(vocabulary.id, existing.id)).run();
+      return { ...existing, ...updateData };
     }
-    const id = crypto.randomUUID();
-    const newWord = { id, ...data };
-    await this.db.insert(vocabulary).values(newWord).run();
-    return newWord;
+    const newWord = { ...data, status: data.status || 'published', updated_at: now };
+    // D1 handles auto-increment ID
+    const result = await this.db.insert(vocabulary).values(newWord).returning().get();
+    return result;
+  }
+
+  async getSyncDeltas(since: number) {
+    return this.db.select()
+      .from(vocabulary)
+      .where(and(
+        eq(vocabulary.status, 'published'),
+        sql`${vocabulary.updated_at} > ${since}`
+      ))
+      .all();
+  }
+
+  async searchAdmin(query: string, limit = 50) {
+    return this.db.select()
+      .from(vocabulary)
+      .where(sql`${vocabulary.word} LIKE ${query + '%'}`)
+      .limit(limit)
+      .all();
+  }
+
+  async updateVocabulary(id: number, data: any) {
+    const updated = {
+      ...data,
+      status: 'draft',
+      updated_at: Math.floor(Date.now() / 1000)
+    };
+    await this.db.update(vocabulary).set(updated).where(eq(vocabulary.id, id)).run();
+    
+    // Clear cache for this word
+    const current = await this.db.select({ word: vocabulary.word }).from(vocabulary).where(eq(vocabulary.id, id)).get();
+    if (current && this.cache) {
+      await this.cache.delete(`vocab:word:${current.word}`);
+    }
+    
+    return this.db.select().from(vocabulary).where(eq(vocabulary.id, id)).get();
+  }
+
+  async publishAll() {
+    const now = Math.floor(Date.now() / 1000);
+    await this.db.update(vocabulary)
+      .set({ status: 'published', updated_at: now })
+      .where(eq(vocabulary.status, 'draft'))
+      .run();
+    
+    return { version: now };
   }
 
   async deleteVocabulary(id: string) {
-    await this.db.delete(vocabulary).where(eq(vocabulary.id, Number(id))).run();
+    const now = Math.floor(Date.now() / 1000);
+    await this.db.update(vocabulary)
+      .set({ is_deleted: 1, updated_at: now, status: 'published' })
+      .where(eq(vocabulary.id, Number(id)))
+      .run();
     return { success: true };
   }
 

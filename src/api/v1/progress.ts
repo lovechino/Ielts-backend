@@ -7,11 +7,12 @@ import { aiRateLimit } from '../../middleware/rateLimit';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { userProgress, lessons, submissions, questions, users, speakingSessions } from '../../db/schema';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const progressRouter = new Hono<{ Bindings: Bindings }>();
 
 progressRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 });
 

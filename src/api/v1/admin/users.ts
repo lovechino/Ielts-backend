@@ -1,35 +1,14 @@
 import { Hono } from 'hono';
-import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { users } from '../../../db/schema';
 import { eq, like, or, and, sql, desc } from 'drizzle-orm';
-import type { Bindings } from '../../../index';
+import type { Bindings, Variables } from '../../../index';
+import { adminGuard } from '../../../middleware/auth';
+import { writeAdminAuditLog } from '../../../services/admin-audit.service';
 
-const adminUserRouter = new Hono<{ Bindings: Bindings }>();
+const adminUserRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 
-adminUserRouter.use('/*', async (c, next) => {
-  if (c.env.ENABLE_ADMIN !== 'true') {
-    return c.json({ success: false, error: 'Not found' }, 404);
-  }
-  return next();
-});
-
-adminUserRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
-  return jwt({ secret, alg: 'HS256' })(c, next);
-});
-
-adminUserRouter.use('/*', async (c, next) => {
-  const payload = c.get('jwtPayload') as { sub: string; role?: string };
-  if (payload.role !== 'admin') {
-    const db = drizzle(c.env.DB);
-    const user = await db.select({ role: users.role }).from(users).where(eq(users.id, payload.sub)).get();
-    if (user?.role !== 'admin') {
-      return c.json({ success: false, error: 'Forbidden: admin access required' }, 403);
-    }
-  }
-  return next();
-});
+adminUserRouter.use('/*', adminGuard);
 
 /**
  * GET /api/v1/admin/users
@@ -109,6 +88,12 @@ adminUserRouter.patch('/:id', async (c) => {
     await db.update(users)
       .set(updateData)
       .where(eq(users.id, id));
+
+    await writeAdminAuditLog(c, 'user.update', {
+      targetType: 'user',
+      targetId: id,
+      metadata: { fields: Object.keys(updateData).filter((key) => key !== 'updated_at') },
+    });
 
     return c.json({ success: true, message: 'User updated successfully' });
   } catch (error) {

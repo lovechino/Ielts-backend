@@ -5,11 +5,12 @@ import { eq, inArray, sql, count, and, desc } from 'drizzle-orm';
 import { vocabulary, userVocabProgress, courseEnrollments, userProgress, lessons, users, speakingSessions, shopItems, userInventory } from '../../db/schema';
 import { StreakService } from '../../services/streak.service';
 import type { Bindings, Variables } from '../../index';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const statsRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>();
 
 statsRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 });
 
@@ -221,6 +222,51 @@ statsRouter.post('/rewards', async (c) => {
     bonus_xp: finalXp - body.xp,
     multiplier: xpMultiplier
   });
+});
+
+// Route: POST /api/v1/stats/ad-reward - Reward user with coins after watching an ad
+statsRouter.post('/ad-reward', async (c) => {
+  const payload = c.get('jwtPayload') as { sub: string };
+  const userId = payload.sub;
+  const db = drizzle(c.env.DB);
+  
+  // Reward: 20 Coins per ad (can be adjusted)
+  const COIN_REWARD = 20;
+
+  try {
+    const result = await db.update(users)
+      .set({
+        coins: sql`${users.coins} + ${COIN_REWARD}`,
+        updated_at: sql`(strftime('%s', 'now') * 1000)`
+      })
+      .where(eq(users.id, userId))
+      .returning({
+        new_coins: users.coins
+      })
+      .get();
+
+    // Log transaction
+    const { transactions } = await import('../../db/schema');
+    await db.insert(transactions).values({
+      id: crypto.randomUUID(),
+      user_id: userId,
+      amount: COIN_REWARD,
+      currency: 'COINS',
+      type: 'ad_reward',
+      provider: 'admob',
+      status: 'completed',
+    }).run();
+
+    return c.json({ 
+      success: true, 
+      data: {
+        rewarded_coins: COIN_REWARD,
+        new_coins: result.new_coins
+      }
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
 });
 
 // ─── Leaderboard helpers ──────────────────────────────────────────────────────

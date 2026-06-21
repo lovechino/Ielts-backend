@@ -6,12 +6,13 @@ import { userVocabProgress, userUnlockedBundles } from '../../db/schema';
 import { VocabularyService } from '../../services/vocabulary.service';
 import { eq } from 'drizzle-orm';
 import type { Bindings } from '../../index';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const vocabRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
 
 // GET /api/v1/vocabulary/bundles/my — Lấy danh sách bundle đã mở khóa
 vocabRouter.get('/bundles/my', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 }, async (c) => {
   const payload = c.get('jwtPayload') as { sub: string };
@@ -27,7 +28,7 @@ vocabRouter.get('/bundles/my', async (c, next) => {
 
 // POST /api/v1/vocabulary/bundles/unlock — Mở khóa bundle
 vocabRouter.post('/bundles/unlock', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 }, async (c) => {
   const payload = c.get('jwtPayload') as { sub: string };
@@ -90,7 +91,7 @@ vocabRouter.get('/:word', async (c) => {
 });
 
 vocabRouter.patch('/:id/progress', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 }, async (c) => {
   const vocab_id = c.req.param('id');

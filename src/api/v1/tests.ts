@@ -5,12 +5,13 @@ import { drizzle } from 'drizzle-orm/d1';
 import { eq, and } from 'drizzle-orm';
 import { lessons, userProgress } from '../../db/schema';
 import type { Bindings } from '../../index';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const testRouter = new Hono<{ Bindings: Bindings }>();
 
 // GET /api/v1/tests?type=mini|full
 testRouter.get('/', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 }, async (c) => {
   const payload = c.get('jwtPayload') as { sub: string };

@@ -6,57 +6,101 @@
  * Admin set version qua: PUT /api/v1/dictionary/version (requires admin JWT)
  */
 import { Hono } from 'hono';
-import { jwt } from 'hono/jwt';
-import { drizzle } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
-import { users } from '../../db/schema';
-import type { Bindings } from '../../index';
+import { VocabularyService } from '../../services/vocabulary.service';
+import type { Bindings, Variables } from '../../index';
+import { adminGuard } from '../../middleware/auth';
+import { writeAdminAuditLog } from '../../services/admin-audit.service';
 
-const dictionaryRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
+const dictionaryRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>({ strict: false });
 
 const KV_KEY = 'dictionary:version';
+const KV_PUB_KEY = 'vocab_db_version';
 
 // ── GET /dictionary/version — public, no auth ─────────────────────────────────
 dictionaryRouter.get('/version', async (c) => {
   try {
     const raw = await c.env.CACHE.get(KV_KEY);
-    if (!raw) {
-      // Fallback mặc định nếu chưa set
-      return c.json({
-        success: true,
-        data: {
-          version: '0.0.0',
-          url: null,
-          checksum: null,
-          isFullUpdate: true,
-          patchUrl: null,
-          patchSize: null,
-          updatedAt: null,
-        },
-      });
-    }
-    return c.json({ success: true, data: JSON.parse(raw) });
+    const pubVersion = await c.env.CACHE.get(KV_PUB_KEY);
+    
+    const baseMeta = raw ? JSON.parse(raw) : {
+      version: '0.0.0',
+      url: null,
+      checksum: null,
+      isFullUpdate: true,
+      patchUrl: null,
+      patchSize: null,
+      updatedAt: null,
+    };
+
+    return c.json({ 
+      success: true, 
+      data: {
+        ...baseMeta,
+        current_version: pubVersion ? parseInt(pubVersion) : 0,
+        full_db_url: baseMeta.url // Alias for migration plan compatibility
+      } 
+    });
   } catch {
     return c.json({ success: false, error: 'Failed to fetch version' }, 500);
   }
 });
 
-// ── PUT /dictionary/version — admin only ──────────────────────────────────────
-dictionaryRouter.put('/version', async (c, next) => {
-  // Auth guard
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
-  return jwt({ secret, alg: 'HS256' })(c, next);
-}, async (c, next) => {
-  const payload = c.get('jwtPayload') as { sub: string; role?: string };
-  if (payload.role !== 'admin') {
-    const db = drizzle(c.env.DB);
-    const user = await db.select({ role: users.role }).from(users).where(eq(users.id, payload.sub)).get();
-    if (user?.role !== 'admin') {
-      return c.json({ success: false, error: 'Forbidden' }, 403);
-    }
+// ── GET /dictionary/sync — public, no auth ────────────────────────────────────
+dictionaryRouter.get('/sync', async (c) => {
+  const since = parseInt(c.req.query('since') || '0');
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  
+  try {
+    const deltas = await service.getSyncDeltas(since);
+    return c.json({ success: true, data: deltas });
+  } catch (e) {
+    return c.json({ success: false, error: 'Sync failed' }, 500);
   }
-  return next();
-}, async (c) => {
+});
+
+// ── Admin Endpoints ───────────────────────────────────────────────────────────
+
+dictionaryRouter.get('/admin/search', adminGuard, async (c) => {
+  const q = c.req.query('q') || '';
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const results = await service.searchAdmin(q);
+  return c.json({ success: true, data: results });
+});
+
+dictionaryRouter.patch('/admin/:id', adminGuard, async (c) => {
+  const idParam = c.req.param('id');
+  const id = idParam ? parseInt(idParam, 10) : NaN;
+  if (!Number.isFinite(id)) {
+    return c.json({ success: false, error: 'Invalid vocabulary id' }, 400);
+  }
+
+  const body = await c.req.json();
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const result = await service.updateVocabulary(id, body);
+  await writeAdminAuditLog(c, 'dictionary.vocabulary_update', {
+    targetType: 'vocabulary',
+    targetId: id,
+    metadata: { fields: Object.keys(body) },
+  });
+  return c.json({ success: true, data: result });
+});
+
+dictionaryRouter.post('/admin/publish', adminGuard, async (c) => {
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const { version } = await service.publishAll();
+  
+  // Update version in KV
+  await c.env.CACHE.put(KV_PUB_KEY, version.toString());
+  await writeAdminAuditLog(c, 'dictionary.publish', {
+    targetType: 'dictionary',
+    targetId: version,
+  });
+  
+  return c.json({ success: true, data: { version } });
+});
+
+// ── PUT /dictionary/version — admin only (Old format) ─────────────────────────
+dictionaryRouter.put('/version', adminGuard, async (c) => {
   try {
     const body = await c.req.json() as {
       version: string;
@@ -83,6 +127,15 @@ dictionaryRouter.put('/version', async (c, next) => {
 
     // Cache 24h — app checks on startup
     await c.env.CACHE.put(KV_KEY, JSON.stringify(meta), { expirationTtl: 86400 });
+    await writeAdminAuditLog(c, 'dictionary.version_update', {
+      targetType: 'dictionary_version',
+      targetId: body.version,
+      metadata: {
+        url: body.url,
+        checksum: body.checksum ?? null,
+        isFullUpdate: body.isFullUpdate ?? true,
+      },
+    });
 
     return c.json({ success: true, data: meta });
   } catch {

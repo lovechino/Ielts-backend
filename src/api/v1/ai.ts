@@ -2,15 +2,18 @@ import { Hono } from 'hono';
 import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, inArray } from 'drizzle-orm';
-import { vocabulary, questions as questionsTable } from '../../db/schema';
+import { vocabulary, questions as questionsTable, users } from '../../db/schema';
+import { sql } from 'drizzle-orm';
 import type { Bindings } from '../../index';
 import { AIService } from '../../services/ai.service';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const aiRouter = new Hono<{ Bindings: Bindings }>();
+const JSON_CHAT_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 
 // Auth middleware
 aiRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 });
 
@@ -19,15 +22,26 @@ aiRouter.use('/*', async (c, next) => {
  * Body: { audio: base64, target_text: string }
  */
 aiRouter.post('/pronunciation-check', async (c) => {
-  const { audio, target_text } = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
+  const { audio, target_text, only_transcript } = body;
 
   if (!audio || !target_text) {
     return c.json({ success: false, message: 'Missing audio or target_text' }, 422);
   }
 
   const db = drizzle(c.env.DB);
+  const userPayload = c.get('jwtPayload') as { id?: string } | undefined;
+  let shouldDeductCoins = false;
 
   try {
+    if (userPayload?.id) {
+      // Check user coins
+      const user = await db.select().from(users).where(eq(users.id, userPayload.id)).get();
+      if (!user || (user.coins ?? 0) < 4) {
+        return c.json({ success: false, error: { code: 'INSUFFICIENT_CREDITS', message: 'Bạn cần ít nhất 4 Xu để sử dụng tính năng này.' } }, 402);
+      }
+      shouldDeductCoins = true;
+    }
     // 1. Chuyển base64 sang Uint8Array
     const binaryString = atob(audio);
     const audioBuffer = new Uint8Array(binaryString.length);
@@ -37,34 +51,174 @@ aiRouter.post('/pronunciation-check', async (c) => {
 
     // 2. Sử dụng Cloudflare Workers AI Whisper để lấy Transcription (Latin)
     const response = await c.env.AI.run('@cf/openai/whisper', {
-      audio: [...audioBuffer]
+      audio: [...audioBuffer],
+      language: "en"
     });
 
-    const transcription = response.text?.trim()?.toLowerCase() || '';
+    const transcription = response.text?.trim() || '';
+
+    // Nếu client chỉ yêu cầu transcript (để tự chấm điểm offline)
+    if (only_transcript) {
+      return c.json({
+        success: true,
+        data: {
+          transcription: transcription
+        }
+      });
+    }
+
     const cleanTarget = target_text.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"");
-    const cleanHeard = transcription.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"");
+    const cleanHeard = transcription.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"");
+    const targetWords = cleanTarget.split(/\s+/).filter(Boolean);
+    const heardWords = cleanHeard.split(/\s+/).filter(Boolean);
+    const isEnglishToken = (word: string) => /^[a-z]+(?:'[a-z]+)?$/i.test(word);
 
     // 3. Chuyển đổi sang IPA để chấm điểm chính xác hơn
-    // Lấy IPA chuẩn của từ mục tiêu
-    const targetVocab = await db.select({ pronunciation: vocabulary.pronunciation })
-      .from(vocabulary)
-      .where(eq(vocabulary.word, cleanTarget))
-      .get();
+    // Hàm lấy IPA (có AI fallback)
+    const getIpaForWords = async (words: string[]) => {
+      if (words.length === 0) return new Map<string, string>();
+      
+      // 1. Tra cứu từ DB trước
+      const foundVocabs = await db.select({ 
+        word: vocabulary.word,
+        pronunciation: vocabulary.pronunciation 
+      })
+        .from(vocabulary)
+        .where(inArray(vocabulary.word, words))
+        .all();
+      
+      const vocabMap = new Map(foundVocabs.map(v => [v.word, v.pronunciation]));
+      const missingWords = words.filter(w => !vocabMap.has(w) && isEnglishToken(w));
+      words
+        .filter(w => !isEnglishToken(w))
+        .forEach(w => vocabMap.set(w, `/${w}/`));
+
+      // 2. Nếu thiếu, dùng AI để suy luận IPA
+      if (missingWords.length > 0) {
+        console.log(`[AI IPA] Missing ${missingWords.length} words, generating via AI:`, missingWords);
+        try {
+          const prompt = `Generate standard International Phonetic Alphabet (IPA) for these English words. Return ONLY a JSON object where keys are words and values are IPA strings (enclosed in slashes / /).
+Words: ${missingWords.join(', ')}`;
+
+          const aiRes = await c.env.AI.run(JSON_CHAT_MODEL, {
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' }
+          });
+
+          const generatedIpas = JSON.parse(aiRes.response);
+          
+          // 3. Lưu vào DB để lần sau dùng luôn (Async - không đợi để tối ưu tốc độ phản hồi)
+          for (const [word, ipa] of Object.entries(generatedIpas)) {
+            const cleanIpa = String(ipa);
+            const now = Math.floor(Date.now() / 1000);
+            vocabMap.set(word, cleanIpa);
+            
+            // Upsert vào DB (D1)
+            c.executionCtx.waitUntil(
+              db.insert(vocabulary)
+                .values({ 
+                  word: String(word),
+                  pronunciation: cleanIpa,
+                  definition: 'Auto-generated by AI',
+                  topic: 'AI-Generated',
+                  status: 'published',
+                  updated_at: now,
+                  is_deleted: 0
+                })
+                .onConflictDoUpdate({
+                  target: vocabulary.word,
+                  set: { pronunciation: cleanIpa, updated_at: now }
+                })
+                .execute()
+                .catch((cacheErr) => {
+                  console.error('[AI IPA Cache Error]', cacheErr);
+                })
+            );
+          }
+        } catch (err) {
+          console.error('[AI IPA Error]', err);
+          // Fallback: dùng chính text thô nếu AI lỗi
+          missingWords.forEach(w => vocabMap.set(w, `/${w}/`));
+        }
+      }
+      return vocabMap;
+    };
+
+    // Lấy IPA cho Target và Heard
+    const allWordsToFetch = Array.from(new Set([...targetWords, ...heardWords]));
+    const fullVocabMap = await getIpaForWords(allWordsToFetch);
+
+    const targetIpa = targetWords.map((w: string) => fullVocabMap.get(w) || `/${w}/`).join(' ');
+    const heardIpa = heardWords.map((w: string) => fullVocabMap.get(w) || `/${w}/`).join(' ');
+
+    // CHIẾN LƯỢC CHẤM ĐIỂM MỚI:
+    const normalizeForComparison = (s: string) => {
+      let res = s.toLowerCase()
+        .replace(/[\/\u02c8\u02cc\[\]]/g, '') // Bỏ slash, trọng âm, ngoặc vuông
+        .replace(/\s/g, '');                  // Bỏ khoảng trắng
+      
+      // Bản đồ chuyển đổi các âm tương đồng (Phonetic Mapping)
+      const phoneticMap: Record<string, string> = {
+        'ɪ': 'i', 'iː': 'i', 'i': 'i',
+        'ɛ': 'e', 'æ': 'e', 'e': 'e',
+        'ə': 'a', 'ʌ': 'a', 'ɑː': 'a', 'a': 'a',
+        'ʊ': 'u', 'uː': 'u', 'ʉː': 'u', 'u': 'u',
+        'ɔː': 'o', 'ɒ': 'o', 'o': 'o',
+        's': 's', 'z': 's', 'ʃ': 's', 'ʒ': 's',
+        'f': 'f', 'v': 'f',
+        't': 't', 'd': 't',
+        'k': 'k', 'g': 'k',
+        'p': 'p', 'b': 'p',
+      };
+
+      Object.entries(phoneticMap).forEach(([key, value]) => {
+        const regex = new RegExp(key, 'g');
+        res = res.replace(regex, value);
+      });
+
+      return res.replace(/[^a-z0-9]/g, '').trim();
+    };
+
+    let accuracy = 0;
+    const normTarget = normalizeForComparison(targetIpa);
+    const normHeard = normalizeForComparison(heardIpa);
+
+    if (normTarget && normHeard) {
+      accuracy = calculateAccuracy(normTarget, normHeard);
+      
+      // Bonus 3: Xử lý Homophones hoặc nghe gần giống
+      if (accuracy < 0.8) {
+        // Substring match: Chỉ tính nếu normHeard có độ dài đáng kể
+        if (normHeard.length >= 2 && (normHeard.includes(normTarget) || normTarget.includes(normHeard))) {
+          accuracy = Math.max(accuracy, 0.8);
+        }
+        
+        const dist = calculateAccuracy(normTarget, normHeard);
+        if (dist > 0.6) {
+           accuracy = Math.max(accuracy, dist + 0.1);
+        }
+      }
+    } else {
+      // Fallback: So sánh text thô nếu không có IPA (nhưng vẫn phải có text)
+      if (cleanTarget && cleanHeard) {
+        accuracy = calculateAccuracy(cleanTarget, cleanHeard);
+      }
+    }
+
+    // Giới hạn accuracy tối đa 1.0
+    accuracy = Math.min(1.0, accuracy);
+
+    // Bonus: Nếu text thô giống hệt nhau, accuracy là 1
+    if (cleanTarget === cleanHeard) accuracy = 1.0;
     
-    // Lấy IPA của từ mà AI nghe được
-    const heardVocab = await db.select({ pronunciation: vocabulary.pronunciation })
-      .from(vocabulary)
-      .where(eq(vocabulary.word, cleanHeard))
-      .get();
+    // Bonus 2: Nếu từ mục tiêu xuất hiện trong chuỗi nghe được (vd: target "apple", heard "an apple")
+    if (cleanHeard.includes(cleanTarget) && accuracy < 0.8) {
+      accuracy = Math.max(accuracy, 0.85);
+    }
 
-    // Nếu không tìm thấy IPA trong DB, fallback về text thô (nhưng bọc trong //)
-    const targetIpa = targetVocab?.pronunciation || `/${cleanTarget}/`;
-    const heardIpa = heardVocab?.pronunciation || `/${cleanHeard}/`;
-
-    // 4. Tính toán độ chính xác dựa trên chuỗi IPA
-    // Loại bỏ các ký tự dấu / và dấu trọng âm để so sánh âm thuần túy (tùy chọn)
-    const stripIpa = (s: string) => s.replace(/[\/\u02c8\u02cc]/g, ''); 
-    const accuracy = calculateAccuracy(stripIpa(targetIpa), stripIpa(heardIpa));
+    if (shouldDeductCoins && userPayload?.id) {
+      await db.update(users).set({ coins: sql`${users.coins} - 4` }).where(eq(users.id, userPayload.id)).execute();
+    }
 
     return c.json({
       success: true,
@@ -232,5 +386,107 @@ function calculateAccuracy(s1: string, s2: string): number {
   const distance = matrix[len1][len2];
   return Math.max(0, 1 - distance / Math.max(len1, len2));
 }
+
+/**
+ * GET /api/v1/ai/dictionary-lookup?word=...
+ */
+aiRouter.get('/dictionary-lookup', async (c) => {
+  const word = c.req.query('word')?.trim().toLowerCase();
+  if (!word) {
+    return c.json({ success: false, message: 'Missing word parameter' }, 400);
+  }
+
+  // 1. Dùng Free Dictionary API trước
+  try {
+    const dictRes = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+    if (dictRes.ok) {
+      const data = await dictRes.json() as any[];
+      const entry = data[0];
+      const phonetic = entry.phonetic || (entry.phonetics && entry.phonetics[0]?.text) || '';
+      
+      // Lấy definition đầu tiên ưu tiên verb, noun, adj
+      let pos = '';
+      let defEn = '';
+      let exEn = '';
+      if (entry.meanings && entry.meanings.length > 0) {
+        // Find best meaning
+        const bestMeaning = entry.meanings[0];
+        pos = bestMeaning.partOfSpeech || '';
+        const defObj = bestMeaning.definitions.find((d: any) => d.example) || bestMeaning.definitions[0];
+        if (defObj) {
+          defEn = defObj.definition || '';
+          exEn = defObj.example || '';
+        }
+      }
+
+      // Dịch sang tiếng Việt bằng Google Translate
+      const translate = async (text: string) => {
+        if (!text) return '';
+        try {
+          const res = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q=${encodeURIComponent(text)}`);
+          if (res.ok) {
+            const tData = await res.json() as any;
+            return tData[0].map((p: any) => p[0]).join('');
+          }
+        } catch { }
+        return '';
+      };
+
+      const [defVi, exVi] = await Promise.all([translate(defEn), translate(exEn)]);
+
+      return c.json({
+        success: true,
+        data: {
+          word: entry.word,
+          phonetic: phonetic,
+          part_of_speech: pos,
+          definition: defEn,
+          definition_vi: defVi,
+          example: exEn,
+          example_vi: exVi,
+          source: 'dictionary_api'
+        }
+      });
+    }
+  } catch (error) {
+    console.warn('Dictionary API error:', error);
+  }
+
+  // 2. Fallback to Llama 3
+  try {
+    const prompt = `You are an English-Vietnamese dictionary. Provide details for the word or phrase: "${word}". 
+Return ONLY a valid JSON object with EXACTLY these keys:
+"word": the word itself,
+"phonetic": the IPA phonetic transcription (e.g. /həˈləʊ/),
+"part_of_speech": noun, verb, adjective, etc.,
+"definition": the English definition,
+"definition_vi": the accurate Vietnamese translation of the definition,
+"example": a practical English example sentence,
+"example_vi": the Vietnamese translation of the example sentence.
+
+Ensure the output is pure JSON without any markdown formatting like \`\`\`json.`;
+
+    const aiRes = await c.env.AI.run(JSON_CHAT_MODEL, {
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' }
+    });
+
+    let resultJson = aiRes.response;
+    if (resultJson.startsWith('```json')) {
+       resultJson = resultJson.replace(/```json/g, '').replace(/```/g, '').trim();
+    }
+    
+    const parsed = JSON.parse(resultJson);
+    parsed.source = 'workers_ai';
+
+    return c.json({
+      success: true,
+      data: parsed
+    });
+  } catch (error: any) {
+    console.error('Llama3 Lookup Error:', error);
+    return c.json({ success: false, message: 'AI processing failed' }, 500);
+  }
+});
 
 export default aiRouter;

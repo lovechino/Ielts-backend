@@ -2,15 +2,19 @@ import { Hono } from 'hono';
 import { jwt, sign } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, and, gt, isNull } from 'drizzle-orm';
-import { users, courseEnrollments, courses, refreshTokens, devicePushTokens } from '../../db/schema';
+import { users, courseEnrollments, courses, refreshTokens, devicePushTokens, userWordVault, userInventory, shopItems } from '../../db/schema';
 import bcrypt from 'bcryptjs';
 import { Bindings, Variables } from '../../index';
 import googleAuth from './auth-google';
-import { authRateLimit } from '../../middleware/rateLimit';
+import appleAuth from './auth-apple';
+import { authRateLimit, profileUpdateRateLimit } from '../../middleware/rateLimit';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const auth = new Hono<{ Bindings: Bindings, Variables: Variables }>();
+const FULL_NAME_CHANGE_COOLDOWN_SECONDS = 7 * 24 * 60 * 60;
 
 auth.route('/google', googleAuth);
+auth.route('/apple', appleAuth);
 
 // Helpers
 const hashPassword = async (password: string) => bcrypt.hash(password, 10);
@@ -21,43 +25,55 @@ const randomToken = () => {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
 };
 
+const createRefreshToken = () => {
+  const selector = randomToken().slice(0, 24);
+  const validator = randomToken();
+  return { selector, validator, raw: `${selector}.${validator}` };
+};
+
+const parseRefreshToken = (raw: string) => {
+  const [selector, validator, ...rest] = raw.split('.');
+  if (!selector || !validator || rest.length > 0) return null;
+  return { selector, validator };
+};
+
+const normalizeFullName = (value: unknown) =>
+  typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+
 async function generateTokens(userId: string, email: string, role: string | null, secret: string, db: ReturnType<typeof drizzle>) {
   const accessToken = await sign(
     { sub: userId, email, role, exp: Math.floor(Date.now() / 1000) + 15 * 60 },
     secret
   );
 
-  const rawRefresh = randomToken();
-  const tokenHash = await bcrypt.hash(rawRefresh, 10);
+  const refresh = createRefreshToken();
+  const tokenHash = await bcrypt.hash(refresh.validator, 10);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   await db.insert(refreshTokens).values({
     user_id: userId,
+    selector: refresh.selector,
     token_hash: tokenHash,
     expires_at: expiresAt,
   }).run();
 
-  return { accessToken, refreshToken: rawRefresh };
+  return { accessToken, refreshToken: refresh.raw };
 }
 
 async function refreshAccessToken(rawRefresh: string, secret: string, db: ReturnType<typeof drizzle>) {
   const now = new Date();
-  const stored = await db.select()
+  const parsed = parseRefreshToken(rawRefresh);
+  if (!parsed) return null;
+
+  const matched = await db.select()
     .from(refreshTokens)
     .where(and(
+      eq(refreshTokens.selector, parsed.selector),
       gt(refreshTokens.expires_at, now),
       isNull(refreshTokens.revoked_at)
     ))
-    .all();
-
-  let matched: typeof stored[number] | null = null;
-  for (const row of stored) {
-    if (await bcrypt.compare(rawRefresh, row.token_hash)) {
-      matched = row;
-      break;
-    }
-  }
-  if (!matched) return null;
+    .get();
+  if (!matched || !(await bcrypt.compare(parsed.validator, matched.token_hash))) return null;
 
   // Revoke old token
   await db.update(refreshTokens)
@@ -68,6 +84,7 @@ async function refreshAccessToken(rawRefresh: string, secret: string, db: Return
   // Fetch user for new tokens
   const user = await db.select().from(users).where(eq(users.id, matched.user_id)).get();
   if (!user) return null;
+  if (!user.is_active) return null;
 
   return generateTokens(user.id, user.email, user.role, secret, db);
 }
@@ -75,12 +92,16 @@ async function refreshAccessToken(rawRefresh: string, secret: string, db: Return
 // POST /register
 auth.post('/register', authRateLimit, async (c) => {
   const { email, password, full_name } = await c.req.json();
-  if (!email || !password || !full_name) {
+  const normalizedFullName = normalizeFullName(full_name);
+  if (!email || !password || !normalizedFullName) {
     return c.json({ success: false, error: 'Missing required fields' }, 400);
+  }
+  if (normalizedFullName.length < 2 || normalizedFullName.length > 40) {
+    return c.json({ success: false, error: 'Full name must be 2-40 characters' }, 400);
   }
 
   const db = drizzle(c.env.DB);
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
 
   const existingUser = await db.select().from(users).where(eq(users.email, email)).get();
   if (existingUser) {
@@ -93,7 +114,7 @@ auth.post('/register', authRateLimit, async (c) => {
     const newUser = await db.insert(users).values({
       email,
       password_hash: passwordHash,
-      full_name,
+      full_name: normalizedFullName,
     }).returning().get();
 
     const tokens = await generateTokens(newUser.id, newUser.email, newUser.role, secret, db);
@@ -116,7 +137,6 @@ auth.post('/register', authRateLimit, async (c) => {
           email: newUser.email,
           full_name: newUser.full_name,
           role: newUser.role,
-          avatar_frame: newUser.avatar_frame,
           has_completed_assessment: newUser.has_completed_assessment,
         },
       },
@@ -130,7 +150,7 @@ auth.post('/register', authRateLimit, async (c) => {
 auth.post('/login', authRateLimit, async (c) => {
   const { email, password } = await c.req.json();
   const db = drizzle(c.env.DB);
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
 
   const user = await db.select().from(users).where(eq(users.email, email)).get();
   if (!user || !user.password_hash) {
@@ -142,7 +162,15 @@ auth.post('/login', authRateLimit, async (c) => {
     return c.json({ success: false, error: 'Invalid email or password' }, 401);
   }
 
-  const tokens = await generateTokens(user.id, user.email, user.role, secret, db);
+  const activeUser = user.is_active
+    ? user
+    : await db.update(users)
+        .set({ is_active: true, updated_at: new Date() })
+        .where(eq(users.id, user.id))
+        .returning()
+        .get();
+
+  const tokens = await generateTokens(activeUser.id, activeUser.email, activeUser.role, secret, db);
 
   return c.json({
     success: true,
@@ -150,17 +178,16 @@ auth.post('/login', authRateLimit, async (c) => {
       access_token: tokens.accessToken,
       refresh_token: tokens.refreshToken,
       user: {
-        id: user.id,
-        email: user.email,
-        full_name: user.full_name,
-        role: user.role,
-        target_band: user.target_band,
-        avatar_url: user.avatar_url,
-        avatar_frame: user.avatar_frame,
-        ai_persona: user.ai_persona,
-        has_completed_assessment: user.has_completed_assessment,
-        coins: user.coins,
-        xp: user.xp,
+        id: activeUser.id,
+        email: activeUser.email,
+        full_name: activeUser.full_name,
+        role: activeUser.role,
+        target_band: activeUser.target_band,
+        avatar_url: activeUser.avatar_url,
+        ai_persona: activeUser.ai_persona,
+        has_completed_assessment: activeUser.has_completed_assessment,
+        coins: activeUser.coins,
+        xp: activeUser.xp,
       },
     },
   });
@@ -174,7 +201,7 @@ auth.post('/refresh', async (c) => {
   }
 
   const db = drizzle(c.env.DB);
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
 
   const result = await refreshAccessToken(refresh_token, secret, db);
   if (!result) {
@@ -199,23 +226,25 @@ auth.post('/logout', async (c) => {
 
   const db = drizzle(c.env.DB);
   const now = new Date();
+  const parsed = parseRefreshToken(refresh_token);
+  if (!parsed) {
+    return c.json({ success: true, data: null });
+  }
 
   const stored = await db.select()
     .from(refreshTokens)
     .where(and(
+      eq(refreshTokens.selector, parsed.selector),
       gt(refreshTokens.expires_at, now),
       isNull(refreshTokens.revoked_at)
     ))
-    .all();
+    .get();
 
-  for (const row of stored) {
-    if (await bcrypt.compare(refresh_token, row.token_hash)) {
-      await db.update(refreshTokens)
-        .set({ revoked_at: now })
-        .where(eq(refreshTokens.id, row.id))
-        .run();
-      break;
-    }
+  if (stored && await bcrypt.compare(parsed.validator, stored.token_hash)) {
+    await db.update(refreshTokens)
+      .set({ revoked_at: now })
+      .where(eq(refreshTokens.id, stored.id))
+      .run();
   }
 
   return c.json({ success: true, data: null });
@@ -223,7 +252,7 @@ auth.post('/logout', async (c) => {
 
 // GET /me (Protected)
 auth.get('/me', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   const jwtMiddleware = jwt({ secret, alg: 'HS256' });
   return jwtMiddleware(c, next);
 }, async (c) => {
@@ -233,6 +262,9 @@ auth.get('/me', async (c, next) => {
   const user = await db.select().from(users).where(eq(users.id, payload.sub)).get();
   if (!user) {
     return c.json({ success: false, error: 'User not found' }, 404);
+  }
+  if (!user.is_active) {
+    return c.json({ success: false, error: { code: 'ACCOUNT_DEACTIVATED', message: 'Account is deactivated. Please log in again to restore it.' } }, 403);
   }
 
   const enrolledCourses = await db.select({
@@ -246,6 +278,37 @@ auth.get('/me', async (c, next) => {
     .where(eq(courseEnrollments.user_id, payload.sub))
     .all();
 
+  // Tính toán Vault Limits
+  const coursesRaw = await db.select({ group_name: userWordVault.group_name })
+    .from(userWordVault)
+    .where(eq(userWordVault.user_id, payload.sub))
+    .groupBy(userWordVault.group_name)
+    .all();
+  
+  const current_courses = coursesRaw.length;
+
+  const inventoryRows = await db.select({ quantity: userInventory.quantity, metadata: shopItems.metadata })
+    .from(userInventory)
+    .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))
+    .where(eq(userInventory.user_id, payload.sub))
+    .all();
+
+  let extra_slots = 0;
+  for (const row of inventoryRows) {
+    if (row.metadata) {
+       const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata;
+       if (meta?.effect === 'extra_course_slot') {
+         extra_slots += (row.quantity || 1) * (meta.value || 1);
+       }
+    }
+  }
+
+  const base_limit = user.tier === 'premium' ? 9999 : 3;
+  const vault_limits = {
+    current_courses,
+    limit: base_limit + extra_slots,
+  };
+
   return c.json({
     success: true,
     data: {
@@ -255,28 +318,29 @@ auth.get('/me', async (c, next) => {
       role: user.role,
       target_band: user.target_band,
       avatar_url: user.avatar_url,
-      avatar_frame: user.avatar_frame,
       ai_persona: user.ai_persona,
       has_completed_assessment: user.has_completed_assessment,
       coins: user.coins,
       xp: user.xp,
       enrolled_courses: enrolledCourses,
+      vault_limits,
     },
   });
 });
 
 // PATCH /me (Protected)
 auth.patch('/me', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   const jwtMiddleware = jwt({ secret, alg: 'HS256' });
   return jwtMiddleware(c, next);
-}, async (c) => {
+}, profileUpdateRateLimit, async (c) => {
   const payload = c.get('jwtPayload') as any;
   const db = drizzle(c.env.DB);
 
   const body = await c.req.json();
   const allowedUpdates = ['full_name', 'target_band', 'avatar_url', 'ai_persona', 'has_completed_assessment'];
   const updateData: Record<string, any> = {};
+  let shouldWriteNameCooldown = false;
 
   for (const key of allowedUpdates) {
     if (body[key] !== undefined) {
@@ -286,6 +350,41 @@ auth.patch('/me', async (c, next) => {
 
   if (Object.keys(updateData).length === 0) {
     return c.json({ success: false, error: 'No valid fields to update' }, 400);
+  }
+
+  if (body.full_name !== undefined) {
+    const normalizedFullName = normalizeFullName(body.full_name);
+    if (normalizedFullName.length < 2 || normalizedFullName.length > 40) {
+      return c.json({ success: false, error: 'Full name must be 2-40 characters' }, 400);
+    }
+
+    const currentUser = await db.select().from(users).where(eq(users.id, payload.sub)).get();
+    if (!currentUser) {
+      return c.json({ success: false, error: 'User not found' }, 404);
+    }
+
+    if (normalizedFullName !== currentUser.full_name) {
+      const cooldownKey = `profile:name-change:${payload.sub}`;
+      const activeCooldown = await c.env.CACHE.get(cooldownKey);
+      if (activeCooldown) {
+        return c.json({
+          success: false,
+          error: {
+            code: 'FULL_NAME_CHANGE_COOLDOWN',
+            message: 'You can change your full name once every 7 days.',
+          },
+        }, 429);
+      }
+
+      updateData.full_name = normalizedFullName;
+      shouldWriteNameCooldown = true;
+    } else {
+      delete updateData.full_name;
+    }
+  }
+
+  if (Object.keys(updateData).length === 0) {
+    return c.json({ success: false, error: 'No changes to update' }, 400);
   }
 
   updateData.updated_at = new Date();
@@ -301,6 +400,14 @@ auth.patch('/me', async (c, next) => {
       return c.json({ success: false, error: 'User not found' }, 404);
     }
 
+    if (shouldWriteNameCooldown) {
+      await c.env.CACHE.put(
+        `profile:name-change:${payload.sub}`,
+        String(Date.now()),
+        { expirationTtl: FULL_NAME_CHANGE_COOLDOWN_SECONDS }
+      );
+    }
+
     return c.json({
       success: true,
       data: {
@@ -310,7 +417,6 @@ auth.patch('/me', async (c, next) => {
         role: updatedUser.role,
         target_band: updatedUser.target_band,
         avatar_url: updatedUser.avatar_url,
-        avatar_frame: updatedUser.avatar_frame,
         ai_persona: updatedUser.ai_persona,
         has_completed_assessment: updatedUser.has_completed_assessment,
       },
@@ -322,7 +428,7 @@ auth.patch('/me', async (c, next) => {
 
 // POST /device-token (Protected) — đăng ký Expo push token
 auth.post('/device-token', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 }, async (c) => {
   const payload = c.get('jwtPayload') as any;
@@ -357,7 +463,7 @@ auth.post('/device-token', async (c, next) => {
 
 // DELETE /device-token (Protected) — xóa push token khi logout
 auth.delete('/device-token', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 }, async (c) => {
   const payload = c.get('jwtPayload') as any;
@@ -386,6 +492,41 @@ auth.delete('/device-token', async (c, next) => {
   }
 });
 
+// DELETE /me (Protected) — Tạm khóa tài khoản, giữ dữ liệu để có thể khôi phục
+auth.delete('/me', async (c, next) => {
+  const secret = requireJwtSecret(c);
+  const jwtMiddleware = jwt({ secret, alg: 'HS256' });
+  return jwtMiddleware(c, next);
+}, async (c) => {
+  const payload = c.get('jwtPayload') as any;
+  const db = drizzle(c.env.DB);
+
+  try {
+    const now = new Date();
+    const result = await db.update(users)
+      .set({ is_active: false, updated_at: now })
+      .where(eq(users.id, payload.sub))
+      .run();
+    
+    if (result.meta.changes === 0) {
+      return c.json({ success: false, error: 'User not found' }, 404);
+    }
+
+    await db.update(refreshTokens)
+      .set({ revoked_at: now })
+      .where(eq(refreshTokens.user_id, payload.sub))
+      .run();
+
+    await db.delete(devicePushTokens)
+      .where(eq(devicePushTokens.user_id, payload.sub))
+      .run();
+
+    return c.json({ success: true, data: { message: 'Account deactivated successfully' } });
+  } catch (error: any) {
+    return c.json({ success: false, error: { message: error.message } }, 500);
+  }
+});
+
 export default auth;
 
 // POST /auth/promote-admin
@@ -396,8 +537,8 @@ export default auth;
 auth.post('/promote-admin', authRateLimit, async (c) => {
   const adminSecret = c.env.ADMIN_SECRET;
 
-  // Nếu không có ADMIN_SECRET trong env → endpoint bị vô hiệu hoá
-  if (!adminSecret) {
+  // Disabled by default. Enable only for local/bootstrap maintenance windows.
+  if (c.env.ENABLE_PROMOTE_ADMIN !== 'true' || !adminSecret) {
     return c.json({ success: false, error: 'Not found' }, 404);
   }
 

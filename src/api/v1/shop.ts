@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { drizzle } from 'drizzle-orm/d1';
 import { shopItems, userInventory, users } from '../../db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, ne } from 'drizzle-orm';
 import { jwtMiddleware } from '../../middleware/auth';
 import type { Bindings, Variables } from '../../index';
 
 const shopRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>();
+const REMOVED_ITEM_TYPES = ['frame'];
 
 // Tất cả các routes yêu cầu đăng nhập
 shopRouter.use('*', jwtMiddleware);
@@ -17,7 +18,10 @@ shopRouter.use('*', jwtMiddleware);
 shopRouter.get('/items', async (c) => {
   const db = drizzle(c.env.DB);
   try {
-    const items = await db.select().from(shopItems).where(eq(shopItems.is_active, true));
+    const items = await db.select().from(shopItems).where(and(
+      eq(shopItems.is_active, true),
+      ne(shopItems.item_type, 'frame')
+    ));
     return c.json({ success: true, data: items });
   } catch (error) {
     return c.json({ success: false, error: 'Failed to fetch shop items' }, 500);
@@ -48,7 +52,7 @@ shopRouter.get('/inventory', async (c) => {
       })
       .from(userInventory)
       .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))
-      .where(eq(userInventory.user_id, user.id));
+      .where(and(eq(userInventory.user_id, user.id), ne(shopItems.item_type, 'frame')));
 
     return c.json({ success: true, data: inventory });
   } catch (error) {
@@ -71,6 +75,9 @@ shopRouter.post('/buy', async (c) => {
     const [userData] = await db.select().from(users).where(eq(users.id, userPayload.id)).limit(1);
 
     if (!item) return c.json({ success: false, error: 'Item not found' }, 404);
+    if (REMOVED_ITEM_TYPES.includes(item.item_type)) {
+      return c.json({ success: false, error: 'Item type is no longer supported' }, 400);
+    }
     if (!item.is_active) return c.json({ success: false, error: 'Item is not for sale' }, 400);
 
     const totalPriceCoins = (item.price_coins || 0) * quantity;
@@ -96,7 +103,7 @@ shopRouter.post('/buy', async (c) => {
       })
       .where(eq(users.id, userData.id));
 
-    if (existing && (item.item_type === 'booster' || item.item_type === 'protection')) {
+    if (existing && (item.item_type === 'booster' || item.item_type === 'protection' || item.item_type === 'expansion')) {
       const updateInv = db.update(userInventory)
         .set({ quantity: existing.quantity + quantity, updated_at: new Date() })
         .where(eq(userInventory.id, existing.id));
@@ -145,12 +152,15 @@ shopRouter.post('/equip', async (c) => {
      .limit(1);
 
    if (!invItem) return c.json({ success: false, error: 'Item not owned' }, 404);
+   if (REMOVED_ITEM_TYPES.includes(invItem.type)) {
+     return c.json({ success: false, error: 'Item type is no longer supported' }, 400);
+   }
 
    const isUnequipping = invItem.is_equipped;
    const batch = [];
 
    // 1. Nếu đang trang bị (Equipping) -> Tháo tất cả vật phẩm cùng loại hiện tại
-   if (!isUnequipping && (invItem.type === 'avatar' || invItem.type === 'frame' || invItem.type === 'booster')) {
+   if (!isUnequipping && (invItem.type === 'avatar' || invItem.type === 'booster')) {
      const sameTypeItems = db
        .select({ id: userInventory.id })
        .from(userInventory)
@@ -185,8 +195,6 @@ shopRouter.post('/equip', async (c) => {
    // 3. Cập nhật profile user
    if (invItem.type === 'avatar') {
      batch.push(db.update(users).set({ avatar_url: isUnequipping ? null : invItem.url }).where(eq(users.id, user.id)));
-   } else if (invItem.type === 'frame') {
-     batch.push(db.update(users).set({ avatar_frame: isUnequipping ? null : invItem.url }).where(eq(users.id, user.id)));
    }
 
    if (batch.length > 0) {

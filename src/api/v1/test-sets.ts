@@ -9,6 +9,7 @@ import { jwt } from 'hono/jwt';
 import { and, eq } from 'drizzle-orm';
 import { courseEnrollments } from '../../db/schema';
 import { drizzle } from 'drizzle-orm/d1';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const testSetRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
 
@@ -67,7 +68,7 @@ testSetRouter.get('/lessons/:lesson_id/questions', async (c) => {
 });
 
 testSetRouter.post('/:id/enroll', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   const jwtMiddleware = jwt({ secret, alg: 'HS256' });
   return jwtMiddleware(c, next);
 }, async (c) => {
@@ -97,7 +98,7 @@ testSetRouter.post('/:id/enroll', async (c, next) => {
 });
 
 testSetRouter.get('/:id/enroll-status', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   const jwtMiddleware = jwt({ secret, alg: 'HS256' });
   return jwtMiddleware(c, next);
 }, async (c) => {

@@ -8,14 +8,15 @@ import { Hono } from 'hono';
 import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, and, inArray } from 'drizzle-orm';
-import { users, userWordVault } from '../../db/schema';
+import { users, userWordVault, userInventory, shopItems } from '../../db/schema';
 import type { Bindings } from '../../index';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const vaultRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
 
 // Auth middleware
 vaultRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 });
 
@@ -38,6 +39,46 @@ vaultRouter.post('/sync', async (c) => {
   const { items } = await c.req.json() as { items: VaultItem[] };
   if (!Array.isArray(items) || items.length === 0) {
     return c.json({ success: true, data: { synced: 0 } });
+  }
+
+  // Check Vault Limits
+  const user = await db.select({ tier: users.tier }).from(users).where(eq(users.id, userId)).get();
+  if (!user) return c.json({ success: false, error: 'User not found' }, 404);
+
+  const inventoryRows = await db.select({ quantity: userInventory.quantity, metadata: shopItems.metadata })
+    .from(userInventory)
+    .innerJoin(shopItems, eq(userInventory.item_id, shopItems.id))
+    .where(eq(userInventory.user_id, userId))
+    .all();
+
+  let extra_slots = 0;
+  for (const row of inventoryRows) {
+    if (row.metadata) {
+       const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata;
+       if (meta?.effect === 'extra_course_slot') {
+         extra_slots += (row.quantity || 1) * (meta.value || 1);
+       }
+    }
+  }
+
+  const base_limit = user.tier === 'premium' ? 9999 : 3;
+  const limit = base_limit + extra_slots;
+
+  const coursesRaw = await db.select({ group_name: userWordVault.group_name })
+    .from(userWordVault)
+    .where(eq(userWordVault.user_id, userId))
+    .groupBy(userWordVault.group_name)
+    .all();
+  
+  const existingGroups = new Set(coursesRaw.map(r => r.group_name || 'General'));
+  const incomingGroups = new Set(items.map(i => i.group_name || 'General'));
+  const allGroups = new Set([...existingGroups, ...incomingGroups]);
+
+  if (allGroups.size > limit) {
+    return c.json({ 
+      success: false, 
+      error: { code: 'VAULT_LIMIT_EXCEEDED', message: `Limit of ${limit} custom courses exceeded.` } 
+    }, 403);
   }
 
   let synced = 0;

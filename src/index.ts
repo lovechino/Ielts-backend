@@ -19,7 +19,12 @@ export type Bindings = {
   GOOGLE_IOS_CLIENT_ID?: string;
   FRONTEND_URL: string;
   RESEND_API_KEY?: string;
+  REVENUECAT_WEBHOOK_AUTH_HEADER?: string;
+  REVENUECAT_API_KEY?: string;
   ENABLE_ADMIN?: string;
+  ENABLE_PROMOTE_ADMIN?: string;
+  PAYMENT_MOCK_ENABLED?: string;
+  ALLOWED_ORIGINS?: string;
   /** Secret key để promote user thành admin. Không set = tính năng bị khoá. */
   ADMIN_SECRET?: string;
   SCORING_QUEUE: Queue;
@@ -43,8 +48,12 @@ app.use('*', logger());
 
 // CORS: web clients only (Expo native does not send preflight).
 app.use('*', cors({
-  origin: (origin) => {
-    const allowed = [
+  origin: (origin, c) => {
+    const configuredOrigins = c.env.ALLOWED_ORIGINS
+      ?.split(',')
+      .map((item: string) => item.trim())
+      .filter(Boolean);
+    const allowed = configuredOrigins?.length ? configuredOrigins : [
       'http://localhost:3000',
       'http://127.0.0.1:3000',
       'http://localhost:8081',
@@ -53,11 +62,11 @@ app.use('*', cors({
       'http://127.0.0.1:19006',
       'https://ielts-platform.pages.dev',
     ];
-    if (!origin) return 'http://localhost:3000';
+    if (!origin) return undefined;
     if (allowed.includes(origin)) return origin;
-    // Local dev: Expo web / other localhost ports
-    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return origin;
-    return 'http://localhost:3000';
+    // Local dev: Expo web / other localhost ports. Disabled once ALLOWED_ORIGINS is configured.
+    if (!configuredOrigins?.length && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return origin;
+    return undefined;
   },
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
@@ -66,14 +75,14 @@ app.use('*', cors({
 
 // Health Check
 app.get('/', (c) => {
-  return c.json({ message: 'Welcome to IELTS Learning Platform API (Cloudflare Edge)' });
+  return c.json({ message: 'Welcome to Talko API (Cloudflare Edge)' });
 });
 
 app.get('/health', (c) => {
   return c.json({
     status: 'healthy',
     version: '1.0.0',
-    project: 'IELTS Learning Platform CF'
+    project: 'Talko AI-Powered IELTS Platform'
   });
 });
 
@@ -106,8 +115,20 @@ export default {
   queue: async (batch: MessageBatch<any>, env: Bindings, ctx: ExecutionContext) => {
     switch (batch.queue) {
       case 'scoring-queue': {
-        const { scoringConsumer } = await import('./workers/scoring-consumer');
-        await scoringConsumer(batch, env, ctx);
+        // Vocab contribution review messages are routed through scoring-queue
+        const hasContribMessages = batch.messages.some(m => m.body?.type === 'vocab_contribution_review');
+        const hasScoringMessages = batch.messages.some(m => !m.body?.type);
+
+        if (hasContribMessages) {
+          const { vocabContributionConsumer } = await import('./workers/vocab-contribution-consumer');
+          const contribBatch = { ...batch, messages: batch.messages.filter(m => m.body?.type === 'vocab_contribution_review') };
+          await vocabContributionConsumer(contribBatch as any, env, ctx);
+        }
+        if (hasScoringMessages) {
+          const { scoringConsumer } = await import('./workers/scoring-consumer');
+          const scoringBatch = { ...batch, messages: batch.messages.filter(m => !m.body?.type) };
+          await scoringConsumer(scoringBatch as any, env, ctx);
+        }
         break;
       }
       case 'speaking-queue': {

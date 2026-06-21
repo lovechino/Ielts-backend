@@ -115,6 +115,14 @@ export const authRateLimit = rateLimit({
   identifier: 'ip',
 });
 
+/** Profile updates: 10 req/10 phut per user — tranh spam cap nhat ho so */
+export const profileUpdateRateLimit = rateLimit({
+  limit: 10,
+  windowSecs: 10 * 60,
+  keyPrefix: 'profile-update',
+  identifier: 'user',
+});
+
 /** AI scoring (writing submit, speaking turns): 20 req/phút per IP */
 export const aiRateLimit = rateLimit({
   limit: 20,

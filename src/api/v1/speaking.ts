@@ -8,8 +8,11 @@ import { aiRateLimit } from '../../middleware/rateLimit';
 import { sql } from 'drizzle-orm';
 import { sendPushNotification } from '../../services/push.service';
 import { processSpeakingReport } from '../../workers/speaking-consumer';
+import { requireJwtSecret } from '../../middleware/auth';
 
 const SPEAKING_REPORT_DELAY_MS = 5 * 60 * 1000; // 5 phút cho free user
+
+const JSON_CHAT_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 
 const speakingRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
 
@@ -71,7 +74,7 @@ IELTS SPEAKING OFFICIAL CRITERIA (DETAILED):
 
 // Protect all speaking routes
 speakingRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
+  const secret = requireJwtSecret(c);
   return jwt({ secret, alg: 'HS256' })(c, next);
 });
 
@@ -279,7 +282,7 @@ speakingRouter.post('/session/start', aiRateLimit, async (c) => {
         ? `You are the friendly IELTS examiner ${persona.name}. Start a free practice session on "${sessionTopic}". Generate a brief greeting and 3 general questions. Return STRICT JSON: { "greeting": "...", "questions": [ { "part": 1, "question": "..." } ] }`
         : `You are IELTS examiner ${persona.name}. Generate exact questions for a test on "${sessionTopic}". Available Parts: ${partsList.join(', ')}. Return STRICT JSON: { "greeting": "...", "questions": [ { "part": number, "question": "..." } ] }`;
 
-      const aiRes = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      const aiRes = await c.env.AI.run(JSON_CHAT_MODEL, {
         messages: [{ role: 'user', content: openingPrompt }],
         max_tokens: 2048
       });

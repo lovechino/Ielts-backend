@@ -3,37 +3,15 @@
  * GET /api/v1/stats/admin-overview
  */
 import { Hono } from 'hono';
-import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, sql, count, and, inArray } from 'drizzle-orm';
 import { users, vocabulary, lessons, userProgress, speakingSessions, dailyChallenges, transactions } from '../../../db/schema';
-import type { Bindings } from '../../../index';
+import type { Bindings, Variables } from '../../../index';
+import { adminGuard } from '../../../middleware/auth';
 
-const adminStatsRouter = new Hono<{ Bindings: Bindings }>({ strict: false });
+const adminStatsRouter = new Hono<{ Bindings: Bindings, Variables: Variables }>({ strict: false });
 
-adminStatsRouter.use('/*', async (c, next) => {
-  if (c.env.ENABLE_ADMIN !== 'true') {
-    return c.json({ success: false, error: 'Not found' }, 404);
-  }
-  return next();
-});
-
-adminStatsRouter.use('/*', async (c, next) => {
-  const secret = c.env.JWT_SECRET || 'default-secret-key';
-  return jwt({ secret, alg: 'HS256' })(c, next);
-});
-
-adminStatsRouter.use('/*', async (c, next) => {
-  const payload = c.get('jwtPayload') as { sub: string; role?: string };
-  if (payload.role !== 'admin') {
-    const db = drizzle(c.env.DB);
-    const user = await db.select({ role: users.role }).from(users).where(eq(users.id, payload.sub)).get();
-    if (user?.role !== 'admin') {
-      return c.json({ success: false, error: 'Forbidden' }, 403);
-    }
-  }
-  return next();
-});
+adminStatsRouter.use('/*', adminGuard);
 
 adminStatsRouter.get('/overview', async (c) => {
   const db = drizzle(c.env.DB);
