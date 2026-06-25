@@ -26,6 +26,8 @@ dictionaryRouter.get('/version', async (c) => {
       version: '0.0.0',
       url: null,
       checksum: null,
+      size: null,
+      word_count: null,
       isFullUpdate: true,
       patchUrl: null,
       patchSize: null,
@@ -48,17 +50,50 @@ dictionaryRouter.get('/version', async (c) => {
 // ── GET /dictionary/sync — public, no auth ────────────────────────────────────
 dictionaryRouter.get('/sync', async (c) => {
   const since = parseInt(c.req.query('since') || '0');
+  const requestedLimit = parseInt(c.req.query('limit') || '500');
+  const limit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 500, 1000));
+  const offset = Math.max(0, parseInt(c.req.query('offset') || '0') || 0);
   const service = new VocabularyService(c.env.DB, c.env.CACHE);
   
   try {
-    const deltas = await service.getSyncDeltas(since);
-    return c.json({ success: true, data: deltas });
+    const deltas = await service.getSyncDeltas(since, limit, offset);
+    return c.json({
+      success: true,
+      data: {
+        items: deltas,
+        nextOffset: offset + deltas.length,
+        hasMore: deltas.length === limit,
+      },
+    });
   } catch (e) {
     return c.json({ success: false, error: 'Sync failed' }, 500);
   }
 });
 
 // ── Admin Endpoints ───────────────────────────────────────────────────────────
+
+dictionaryRouter.get('/course-sync', async (c) => {
+  const since = parseInt(c.req.query('since') || '0');
+  const requestedLimit = parseInt(c.req.query('limit') || '500');
+  const limit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 500, 1000));
+  const offset = Math.max(0, parseInt(c.req.query('offset') || '0') || 0);
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+
+  try {
+    const deltas = await service.getCourseSyncDeltas(since, limit, offset);
+    const itemCount = Math.max(deltas.courses.length, deltas.course_words.length);
+    return c.json({
+      success: true,
+      data: {
+        ...deltas,
+        nextOffset: offset + itemCount,
+        hasMore: itemCount === limit,
+      },
+    });
+  } catch {
+    return c.json({ success: false, error: 'Course sync failed' }, 500);
+  }
+});
 
 dictionaryRouter.get('/admin/search', adminGuard, async (c) => {
   const q = c.req.query('q') || '';
@@ -106,6 +141,9 @@ dictionaryRouter.put('/version', adminGuard, async (c) => {
       version: string;
       url: string;
       checksum?: string;
+      size?: number;
+      word_count?: number;
+      current_version?: number;
       isFullUpdate?: boolean;
       patchUrl?: string;
       patchSize?: number;
@@ -119,14 +157,18 @@ dictionaryRouter.put('/version', adminGuard, async (c) => {
       version: body.version,
       url: body.url,
       checksum: body.checksum ?? null,
+      size: body.size ?? null,
+      word_count: body.word_count ?? null,
       isFullUpdate: body.isFullUpdate ?? true,
       patchUrl: body.patchUrl ?? null,
       patchSize: body.patchSize ?? null,
+      current_version: body.current_version ?? Math.floor(Date.now() / 1000),
       updatedAt: new Date().toISOString(),
     };
 
     // Cache 24h — app checks on startup
     await c.env.CACHE.put(KV_KEY, JSON.stringify(meta), { expirationTtl: 86400 });
+    await c.env.CACHE.put(KV_PUB_KEY, String(meta.current_version));
     await writeAdminAuditLog(c, 'dictionary.version_update', {
       targetType: 'dictionary_version',
       targetId: body.version,

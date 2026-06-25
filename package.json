@@ -6,7 +6,10 @@
     "deploy": "wrangler deploy --minify",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "wrangler d1 migrations apply DB"
+    "db:migrate": "wrangler d1 migrations apply DB",
+    "vocab:import": "node scripts/import-vocabulary-jsonl.mjs",
+    "vocab:backfill-courses": "node scripts/backfill-vocab-course-words.mjs",
+    "dictionary:set-version": "node scripts/set-dictionary-version.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

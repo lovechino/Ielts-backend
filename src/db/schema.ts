@@ -194,7 +194,24 @@ export const vocabCourses = sqliteTable('vocab_courses', {
   slug: text('slug').notNull().unique(),
   description: text('description'),
   thumbnail_url: text('thumbnail_url'),
+  status: text('status').default('published'),
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+  updated_at: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
+  is_deleted: integer('is_deleted').default(0),
+}, (table) => ({
+  syncIdx: index('idx_vocab_courses_sync').on(table.updated_at, table.is_deleted),
+}));
+
+export const dictionaryReleases = sqliteTable('dictionary_releases', {
+  id: uuid('id'),
+  version: text('version').notNull().unique(),
+  word_count: integer('word_count').notNull().default(0),
+  status: text('status').notNull().default('draft'), // draft, published, archived
+  notes: text('notes'),
+  checksum: text('checksum'),
+  created_by: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+  published_at: timestamp('published_at'),
 });
 
 export const vocabulary = sqliteTable('vocabulary', {
@@ -218,6 +235,23 @@ export const vocabulary = sqliteTable('vocabulary', {
   is_deleted: integer('is_deleted').default(0),
 }, (table) => ({
   vocabSyncIdx: index('idx_vocab_sync').on(table.status, table.updated_at),
+}));
+
+export const vocabCourseWords = sqliteTable('vocab_course_words', {
+  id: uuid('id'),
+  course_id: text('course_id').notNull().references(() => vocabCourses.id, { onDelete: 'cascade' }),
+  vocab_id: integer('vocab_id').notNull().references(() => vocabulary.id, { onDelete: 'cascade' }),
+  order_index: integer('order_index').notNull().default(0),
+  section: text('section'),
+  is_featured: integer('is_featured', { mode: 'boolean' }).default(false),
+  created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
+  updated_at: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
+  is_deleted: integer('is_deleted').default(0),
+}, (table) => ({
+  courseVocabUc: unique('vocab_course_words_course_vocab_unique').on(table.course_id, table.vocab_id),
+  courseIdx: index('idx_vocab_course_words_course').on(table.course_id, table.order_index),
+  vocabIdx: index('idx_vocab_course_words_vocab').on(table.vocab_id),
+  syncIdx: index('idx_vocab_course_words_sync').on(table.updated_at, table.is_deleted),
 }));
 
 export const userVocabProgress = sqliteTable('user_vocab_progress', {

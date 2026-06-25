@@ -113,9 +113,11 @@ googleAuth.post('/', async (c) => {
     const params: Record<string, string> = {
       code,
       client_id: clientId,
-      client_secret: clientSecret,
       grant_type: 'authorization_code',
     };
+    if (clientSecret) {
+      params.client_secret = clientSecret;
+    }
     if (redirect_uri) {
       params.redirect_uri = redirect_uri;
     }

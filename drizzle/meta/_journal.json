@@ -64,6 +64,20 @@
       "when": 1782021000000,
       "tag": "0008_remove_avatar_frames",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1782022000000,
+      "tag": "0009_add_vocab_courses_to_vocabulary",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1782023000000,
+      "tag": "0010_add_dictionary_releases",
+      "breakpoints": true
     }
   ]
 }

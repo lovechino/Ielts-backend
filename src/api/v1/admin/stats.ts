@@ -4,8 +4,8 @@
  */
 import { Hono } from 'hono';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq, sql, count, and, inArray } from 'drizzle-orm';
-import { users, vocabulary, lessons, userProgress, speakingSessions, dailyChallenges, transactions } from '../../../db/schema';
+import { desc, eq, sql, count, and, inArray } from 'drizzle-orm';
+import { users, vocabulary, lessons, userProgress, speakingSessions, dailyChallenges, transactions, dictionaryReleases } from '../../../db/schema';
 import type { Bindings, Variables } from '../../../index';
 import { adminGuard } from '../../../middleware/auth';
 
@@ -16,11 +16,14 @@ adminStatsRouter.use('/*', adminGuard);
 adminStatsRouter.get('/overview', async (c) => {
   const db = drizzle(c.env.DB);
   const today = new Date().toISOString().slice(0, 10);
+  const dictionaryTargetWords = Number(c.env.DICTIONARY_TARGET_WORDS || 450000);
 
   const [
     totalUsersRow,
     premiumUsersRow,
     totalWordsRow,
+    publishedWordsRow,
+    latestReleaseRow,
     totalLessonsRow,
     totalSubmissionsRow,
     totalSpeakingRow,
@@ -33,6 +36,8 @@ adminStatsRouter.get('/overview', async (c) => {
     db.select({ count: count() }).from(users).get(),
     db.select({ count: count() }).from(users).where(eq(users.tier, 'premium')).get(),
     db.select({ count: count() }).from(vocabulary).get(),
+    db.select({ count: count() }).from(vocabulary).where(and(eq(vocabulary.status, 'published'), eq(vocabulary.is_deleted, 0))).get(),
+    db.select().from(dictionaryReleases).where(eq(dictionaryReleases.status, 'published')).orderBy(desc(dictionaryReleases.published_at)).limit(1).get(),
     db.select({ count: count() }).from(lessons).get(),
     db.select({ count: count() }).from(userProgress).where(eq(userProgress.status, 'completed')).get(),
     db.select({ count: count() }).from(speakingSessions).where(eq(speakingSessions.status, 'completed')).get(),
@@ -67,12 +72,19 @@ adminStatsRouter.get('/overview', async (c) => {
       .get(),
   ]);
 
+  const totalWords = totalWordsRow?.count ?? 0;
+
   return c.json({
     success: true,
     data: {
       total_users: totalUsersRow?.count ?? 0,
       premium_users: premiumUsersRow?.count ?? 0,
-      total_words: totalWordsRow?.count ?? 0,
+      total_words: totalWords,
+      published_words: publishedWordsRow?.count ?? 0,
+      dictionary_words: Math.max(totalWords, dictionaryTargetWords),
+      dictionary_target_words: dictionaryTargetWords,
+      latest_dictionary_version: latestReleaseRow?.version ?? null,
+      latest_dictionary_word_count: latestReleaseRow?.word_count ?? null,
       total_lessons: totalLessonsRow?.count ?? 0,
       total_submissions: totalSubmissionsRow?.count ?? 0,
       total_speaking_sessions: totalSpeakingRow?.count ?? 0,

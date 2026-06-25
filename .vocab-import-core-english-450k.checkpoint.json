@@ -1,0 +1,11 @@
+{
+  "file": "E:\\Ielts\\Tool\\vocab_scraper\\data\\vocab_450k.seed.vi_filled.full.jsonl",
+  "database": "ielts_db",
+  "local": true,
+  "courseId": "aa8c7e14-1c90-4bda-ba1f-0c986df15f13",
+  "courseSlug": "core-english-450k",
+  "lines": 450000,
+  "imported": 450000,
+  "skipped": 0,
+  "updatedAt": "2026-06-23T13:04:06.769Z"
+}

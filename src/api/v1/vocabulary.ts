@@ -54,6 +54,20 @@ vocabRouter.get('/paths', async (c) => {
   return c.json({ success: true, data: courses });
 });
 
+vocabRouter.get('/paths/:id/words', async (c) => {
+  const courseId = c.req.param('id');
+  const limit = c.req.query('limit');
+  const offset = c.req.query('offset');
+  const mode = c.req.query('mode') === 'ids' ? 'ids' : 'full';
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const words = await service.getCourseWords(courseId, {
+    mode,
+    limit: limit ? parseInt(limit) : undefined,
+    offset: offset ? parseInt(offset) : undefined,
+  });
+  return c.json({ success: true, data: words });
+});
+
 vocabRouter.get('/', async (c) => {
   const level = c.req.query('level');
   const topic = c.req.query('topic');

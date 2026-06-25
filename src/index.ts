@@ -23,6 +23,7 @@ export type Bindings = {
   REVENUECAT_API_KEY?: string;
   ENABLE_ADMIN?: string;
   ENABLE_PROMOTE_ADMIN?: string;
+  DICTIONARY_TARGET_WORDS?: string;
   PAYMENT_MOCK_ENABLED?: string;
   ALLOWED_ORIGINS?: string;
   /** Secret key để promote user thành admin. Không set = tính năng bị khoá. */
