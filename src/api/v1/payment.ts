@@ -70,21 +70,16 @@ paymentRouter.post('/payos/webhook', async (c) => {
   if (!orderCode) return c.json({ success: false, error: 'Missing orderCode' }, 400);
 
   try {
-    // 1. Tìm transaction tương ứng
-    // Lưu ý: Trong SQLite, metadata là string, cần cẩn thận khi query hoặc fetch ra parse
-    const allPending = await db.select().from(transactions)
-      .where(eq(transactions.status, 'pending'))
-      .all();
-    
-    const targetTx = allPending.find(tx => {
-      const meta = typeof tx.metadata === 'string' ? JSON.parse(tx.metadata) : tx.metadata;
-      return meta?.orderCode === orderCode;
-    });
-
-    if (!targetTx) return c.json({ success: false, error: 'Transaction not found' }, 404);
+    // 1. Tìm transaction bằng json_extract — tránh full table scan O(N)
+    const { sql: drizzleSql } = await import('drizzle-orm');
 
     if (status === 'PAID') {
-      // Sử dụng db.batch() để thay thế db.transaction() nhằm tránh lỗi BEGIN TRANSACTION trên D1
+      const targetTx = await db.select().from(transactions)
+        .where(drizzleSql`${transactions.status} = 'pending' AND json_extract(${transactions.metadata}, '$.orderCode') = ${orderCode}`)
+        .get();
+
+      if (!targetTx) return c.json({ success: false, error: 'Transaction not found' }, 404);
+
       const [user] = await db.select().from(users).where(eq(users.id, targetTx.user_id)).limit(1);
       
       const gemsToAdd = Math.floor(targetTx.amount / 100);

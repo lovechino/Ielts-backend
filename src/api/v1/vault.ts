@@ -7,7 +7,7 @@
 import { Hono } from 'hono';
 import { jwt } from 'hono/jwt';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { users, userWordVault, userInventory, shopItems } from '../../db/schema';
 import type { Bindings } from '../../index';
 import { requireJwtSecret } from '../../middleware/auth';
@@ -82,32 +82,45 @@ vaultRouter.post('/sync', async (c) => {
   }
 
   let synced = 0;
-  for (const item of items) {
-    if (!item.vocab_id) continue;
 
-    const existing = await db.select({ id: userWordVault.id })
-      .from(userWordVault)
-      .where(and(eq(userWordVault.user_id, userId), eq(userWordVault.vocab_id, item.vocab_id)))
-      .get();
+  // Batch lookup tất cả vocab_id đã tồn tại cho user này — tránh N+1
+  const validItems = items.filter(item => !!item.vocab_id);
+  if (validItems.length === 0) {
+    return c.json({ success: true, data: { synced: 0 } });
+  }
 
+  const existingRows = await db
+    .select({ id: userWordVault.id, vocab_id: userWordVault.vocab_id })
+    .from(userWordVault)
+    .where(eq(userWordVault.user_id, userId))
+    .all();
+
+  const existingMap = new Map(existingRows.map(r => [r.vocab_id, r.id]));
+
+  const now = new Date();
+  const toInsert: typeof userWordVault.$inferInsert[] = [];
+  const toUpdate: { id: string; set: Partial<typeof userWordVault.$inferInsert> }[] = [];
+
+  for (const item of validItems) {
     const nextReviewAt = item.next_review_at
       ? new Date(item.next_review_at * 1000)
       : null;
 
-    if (existing) {
-      await db.update(userWordVault)
-        .set({
+    const existingId = existingMap.get(item.vocab_id);
+    if (existingId) {
+      toUpdate.push({
+        id: existingId,
+        set: {
           status: item.status ?? 'new',
           group_name: item.group_name ?? 'General',
           ease_factor: item.ease_factor ?? 2.5,
           interval: item.interval ?? 0,
           next_review_at: nextReviewAt,
-          updated_at: new Date(),
-        })
-        .where(eq(userWordVault.id, existing.id))
-        .run();
+          updated_at: now,
+        },
+      });
     } else {
-      await db.insert(userWordVault).values({
+      toInsert.push({
         id: crypto.randomUUID(),
         user_id: userId,
         vocab_id: item.vocab_id,
@@ -116,12 +129,25 @@ vaultRouter.post('/sync', async (c) => {
         ease_factor: item.ease_factor ?? 2.5,
         interval: item.interval ?? 0,
         next_review_at: nextReviewAt,
-        created_at: new Date(),
-        updated_at: new Date(),
-      }).run();
+        created_at: now,
+        updated_at: now,
+      });
     }
-    synced++;
   }
+
+  // D1 batch() tối đa 100 statements — chia nhỏ nếu cần
+  const BATCH_SIZE = 100;
+  const allOps = [
+    ...toInsert.map(row => db.insert(userWordVault).values(row)),
+    ...toUpdate.map(({ id, set }) =>
+      db.update(userWordVault).set(set).where(eq(userWordVault.id, id))
+    ),
+  ];
+
+  for (let i = 0; i < allOps.length; i += BATCH_SIZE) {
+    await db.batch(allOps.slice(i, i + BATCH_SIZE) as any);
+  }
+  synced = allOps.length;
 
   return c.json({ success: true, data: { synced } });
 });

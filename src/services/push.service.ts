@@ -28,7 +28,6 @@ export async function sendPushNotification(
 
   if (tokens.length === 0) return;
 
-  // Expo Push API nhận tối đa 100 messages/request
   const messages = tokens.map((t) => ({
     to: t.expo_push_token,
     title: payload.title,
@@ -38,16 +37,21 @@ export async function sendPushNotification(
     priority: 'high',
   }));
 
+  // Expo Push API nhận tối đa 100 messages/request — batch nếu cần
+  const EXPO_BATCH_SIZE = 100;
   try {
-    await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Accept-Encoding': 'gzip, deflate',
-      },
-      body: JSON.stringify(messages),
-    });
+    for (let i = 0; i < messages.length; i += EXPO_BATCH_SIZE) {
+      const batch = messages.slice(i, i + EXPO_BATCH_SIZE);
+      await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip, deflate',
+        },
+        body: JSON.stringify(batch),
+      });
+    }
   } catch (err) {
     // Push notification là best-effort — không throw để không ảnh hưởng flow chính
     console.error('[push] Failed to send notification:', err);

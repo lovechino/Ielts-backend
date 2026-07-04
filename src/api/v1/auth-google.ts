@@ -48,8 +48,9 @@ async function findOrCreateUser(
     .get();
 
   if (existingLink) {
+    // Chỉ cập nhật avatar — không ghi đè full_name để giữ tên user đã tự đổi
     await db.update(users)
-      .set({ avatar_url: avatarUrl, full_name: name, is_active: true, updated_at: new Date() })
+      .set({ avatar_url: avatarUrl, is_active: true, updated_at: new Date() })
       .where(eq(users.id, existingLink.user_id))
       .run();
     return existingLink.user_id;
@@ -107,34 +108,67 @@ googleAuth.post('/', async (c) => {
       return c.json({ success: false, error: 'Missing authorization code' }, 400);
     }
 
-    const clientId = c.env.GOOGLE_CLIENT_ID;
-    const clientSecret = c.env.GOOGLE_CLIENT_SECRET;
+    let payload: any;
 
-    const params: Record<string, string> = {
-      code,
-      client_id: clientId,
-      grant_type: 'authorization_code',
-    };
-    if (clientSecret) {
-      params.client_secret = clientSecret;
+    if (redirect_uri === 'id_token') {
+      // Native Android PKCE flow returned idToken directly
+      payload = decodeIdToken(code);
+    } else if (redirect_uri === 'server_auth_code') {
+      // Native Google Sign-In returned serverAuthCode, exchange it
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: c.env.GOOGLE_CLIENT_ID,
+          client_secret: c.env.GOOGLE_CLIENT_SECRET,
+          grant_type: 'authorization_code',
+          redirect_uri: '',
+        }).toString(),
+      });
+      if (!tokenResponse.ok) {
+        const errorText = await tokenResponse.text();
+        return c.json({ success: false, error: `Token exchange failed: ${errorText}` }, 401);
+      }
+      const tokens = await tokenResponse.json() as Record<string, any>;
+      payload = decodeIdToken(tokens.id_token);
+    } else {
+      // Web flow or code exchange needed
+      // Decide which client ID to use for exchange based on the redirect_uri
+      const isAndroid = redirect_uri && redirect_uri.startsWith('com.googleusercontent.apps.');
+      const clientId = isAndroid ? c.env.GOOGLE_ANDROID_CLIENT_ID : c.env.GOOGLE_CLIENT_ID;
+      const clientSecret = isAndroid ? undefined : c.env.GOOGLE_CLIENT_SECRET; // Android clients usually don't have/need secrets
+
+      if (!clientId) {
+        return c.json({ success: false, error: 'Google Client ID is not configured' }, 500);
+      }
+
+      const params: Record<string, string> = {
+        code,
+        client_id: clientId,
+        grant_type: 'authorization_code',
+      };
+      if (clientSecret) {
+        params.client_secret = clientSecret;
+      }
+      if (redirect_uri) {
+        params.redirect_uri = redirect_uri;
+      }
+
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(params).toString(),
+      });
+
+      if (!tokenResponse.ok) {
+        const errorText = await tokenResponse.text();
+        return c.json({ success: false, error: `Token exchange failed: ${errorText}` }, 401);
+      }
+
+      const tokens = await tokenResponse.json() as Record<string, any>;
+      payload = decodeIdToken(tokens.id_token);
     }
-    if (redirect_uri) {
-      params.redirect_uri = redirect_uri;
-    }
-
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(params).toString(),
-    });
-
-    if (!tokenResponse.ok) {
-      const errorText = await tokenResponse.text();
-      return c.json({ success: false, error: `Token exchange failed: ${errorText}` }, 401);
-    }
-
-    const tokens = await tokenResponse.json() as Record<string, any>;
-    const payload = decodeIdToken(tokens.id_token);
 
     // Accept multiple audiences for cross-client support (Web, Android, iOS)
     const allowedAudiences = [
@@ -219,6 +253,7 @@ googleAuth.post('/', async (c) => {
 // GET /auth/google — OAuth2 redirect (web)
 googleAuth.get('/', async (c) => {
   const url = new URL(c.req.url);
+  url.protocol = 'https:';
   const redirectUri = `${url.origin}/api/v1/auth/google/callback`;
   const state = crypto.randomUUID();
 
@@ -243,6 +278,7 @@ googleAuth.get('/callback', async (c) => {
   try {
     const { code, state } = c.req.query();
     const url = new URL(c.req.url);
+    url.protocol = 'https:';
     const redirectUri = `${url.origin}/api/v1/auth/google/callback`;
 
     const cookies = c.req.header('Cookie') || '';

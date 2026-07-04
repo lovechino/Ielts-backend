@@ -88,20 +88,24 @@ shopRouter.post('/buy', async (c) => {
       return c.json({ success: false, error: 'Insufficient balance' }, 400);
     }
 
-    // 3. Thực hiện giao dịch (Atomic)
-    // Sử dụng db.batch() để thay thế db.transaction() nhằm tránh lỗi BEGIN TRANSACTION trên D1
+    // 3. Thực hiện giao dịch (Atomic) — dùng sql arithmetic để tránh TOCTOU race condition
     const [existing] = await db.select()
       .from(userInventory)
       .where(and(eq(userInventory.user_id, userData.id), eq(userInventory.item_id, itemId)))
       .limit(1);
 
+    // Cập nhật coins/gems bằng phép trừ SQL (atomic), check không âm để phòng race condition
     const updateMoney = db.update(users)
       .set({ 
-        coins: (userData.coins ?? 0) - totalPriceCoins,
-        gems: (userData.gems ?? 0) - totalPriceGems,
+        coins: sql`MAX(0, ${users.coins} - ${totalPriceCoins})`,
+        gems: sql`MAX(0, ${users.gems} - ${totalPriceGems})`,
         updated_at: new Date()
       })
-      .where(eq(users.id, userData.id));
+      .where(and(
+        eq(users.id, userData.id),
+        sql`${users.coins} >= ${totalPriceCoins}`,
+        sql`${users.gems} >= ${totalPriceGems}`
+      ));
 
     if (existing && (item.item_type === 'booster' || item.item_type === 'protection' || item.item_type === 'expansion')) {
       const updateInv = db.update(userInventory)

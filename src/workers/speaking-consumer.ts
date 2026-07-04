@@ -1,4 +1,4 @@
-import { MessageBatch, ExecutionContext } from '@cloudflare/workers-types';
+import type { MessageBatch, ExecutionContext } from '@cloudflare/workers-types';
 import { Bindings } from '../index';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq, sql } from 'drizzle-orm';
@@ -99,7 +99,7 @@ STRICT JSON output:
   "nextSessionSuggestion": "Tiếng Việt suggestion"
 }`;
 
-  const aiRes = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+  const aiRes = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
     messages: [{ role: 'user', content: reportPrompt }],
     max_tokens: 3072
   });

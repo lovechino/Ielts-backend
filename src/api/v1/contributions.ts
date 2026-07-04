@@ -41,22 +41,21 @@ async function grantCoins(
   type: string,
   metadata: object
 ) {
-  // 1. Cộng xu cho user
-  await db.update(users)
-    .set({ coins: sql`${users.coins} + ${amount}` })
-    .where(eq(users.id, userId))
-    .execute();
-
-  // 2. Ghi lịch sử transaction
-  await db.insert(transactions).values({
-    id: crypto.randomUUID(),
-    user_id: userId,
-    amount: amount,
-    currency: 'COINS',
-    type: type,
-    status: 'completed',
-    metadata: metadata as any,
-  }).execute();
+  // Dùng batch để đảm bảo atomic: cộng xu + ghi transaction cùng lúc
+  await db.batch([
+    db.update(users)
+      .set({ coins: sql`${users.coins} + ${amount}` })
+      .where(eq(users.id, userId)),
+    db.insert(transactions).values({
+      id: crypto.randomUUID(),
+      user_id: userId,
+      amount: amount,
+      currency: 'COINS',
+      type: type,
+      status: 'completed',
+      metadata: metadata as any,
+    }),
+  ] as any);
 }
 
 // ── Helper: Auto-score từ vựng ───────────────────────────────────────────────

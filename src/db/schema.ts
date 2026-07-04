@@ -13,6 +13,7 @@ export const users = sqliteTable('users', {
   role: text('role').default('student'),
   tier: text('tier').default('free'),       // 'free' | 'premium'
   has_completed_assessment: integer('has_completed_assessment', { mode: 'boolean' }).default(false),
+  estimated_level: text('estimated_level'), // e.g., 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'
   target_band: real('target_band'),
   avatar_url: text('avatar_url'),
   avatar_frame: text('avatar_frame'),       // Deprecated: avatar frames were removed from Shop
@@ -194,6 +195,7 @@ export const vocabCourses = sqliteTable('vocab_courses', {
   slug: text('slug').notNull().unique(),
   description: text('description'),
   thumbnail_url: text('thumbnail_url'),
+  level: text('level'), // e.g., 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'
   status: text('status').default('published'),
   created_at: timestamp('created_at').default(sql`CURRENT_TIMESTAMP`),
   updated_at: integer('updated_at').default(sql`(strftime('%s', 'now'))`),

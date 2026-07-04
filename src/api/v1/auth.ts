@@ -138,6 +138,7 @@ auth.post('/register', authRateLimit, async (c) => {
           full_name: newUser.full_name,
           role: newUser.role,
           has_completed_assessment: newUser.has_completed_assessment,
+          estimated_level: newUser.estimated_level,
         },
       },
     });
@@ -186,6 +187,7 @@ auth.post('/login', authRateLimit, async (c) => {
         avatar_url: activeUser.avatar_url,
         ai_persona: activeUser.ai_persona,
         has_completed_assessment: activeUser.has_completed_assessment,
+        estimated_level: activeUser.estimated_level,
         coins: activeUser.coins,
         xp: activeUser.xp,
       },
@@ -320,6 +322,7 @@ auth.get('/me', async (c, next) => {
       avatar_url: user.avatar_url,
       ai_persona: user.ai_persona,
       has_completed_assessment: user.has_completed_assessment,
+      estimated_level: user.estimated_level,
       coins: user.coins,
       xp: user.xp,
       enrolled_courses: enrolledCourses,
@@ -338,7 +341,7 @@ auth.patch('/me', async (c, next) => {
   const db = drizzle(c.env.DB);
 
   const body = await c.req.json();
-  const allowedUpdates = ['full_name', 'target_band', 'avatar_url', 'ai_persona', 'has_completed_assessment'];
+  const allowedUpdates = ['full_name', 'target_band', 'avatar_url', 'ai_persona', 'has_completed_assessment', 'estimated_level'];
   const updateData: Record<string, any> = {};
   let shouldWriteNameCooldown = false;
 
@@ -419,6 +422,7 @@ auth.patch('/me', async (c, next) => {
         avatar_url: updatedUser.avatar_url,
         ai_persona: updatedUser.ai_persona,
         has_completed_assessment: updatedUser.has_completed_assessment,
+        estimated_level: updatedUser.estimated_level,
       },
     });
   } catch (error: any) {

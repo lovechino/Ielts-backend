@@ -275,7 +275,7 @@ export class AIService {
     `;
 
     try {
-      const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+      const response = await this.ai.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
         messages: [
           { role: 'system', content: 'You are an Expert IELTS Writing Scorer. Output ONLY valid JSON.' },
           { role: 'user', content: prompt }
@@ -387,7 +387,7 @@ export class AIService {
     `;
 
     try {
-      const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+      const response = await this.ai.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
         messages: [
           { role: 'system', content: 'You are an Expert IELTS Writing Scorer. Output ONLY valid JSON.' },
           { role: 'user', content: prompt }
@@ -442,7 +442,7 @@ export class AIService {
       Giải thích ngắn gọn (2-3 câu) tại sao đáp án này đúng dựa trên passage. Trả lời bằng tiếng Việt.
     `;
 
-    const response = await this.ai.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+    const response = await this.ai.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
       messages: [
         { role: 'system', content: 'You are an IELTS tutor. Explain the correct answer concisely in Vietnamese.' },
         { role: 'user', content: prompt }
@@ -454,7 +454,7 @@ export class AIService {
     const result = {
       explanation: explanationText,
       generatedAt: new Date().toISOString(),
-      model: 'llama-3.1-8b-fp8'
+      model: 'llama-3.3-70b-fp8'
     };
 
     // 2. Lưu vào cache (mãi mãi vì IELTS không đổi)

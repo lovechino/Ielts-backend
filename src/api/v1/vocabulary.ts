@@ -58,14 +58,23 @@ vocabRouter.get('/paths/:id/words', async (c) => {
   const courseId = c.req.param('id');
   const limit = c.req.query('limit');
   const offset = c.req.query('offset');
+  const section = c.req.query('section');
   const mode = c.req.query('mode') === 'ids' ? 'ids' : 'full';
   const service = new VocabularyService(c.env.DB, c.env.CACHE);
   const words = await service.getCourseWords(courseId, {
     mode,
     limit: limit ? parseInt(limit) : undefined,
     offset: offset ? parseInt(offset) : undefined,
+    section: section || undefined,
   });
   return c.json({ success: true, data: words });
+});
+
+vocabRouter.get('/paths/:id/sections', async (c) => {
+  const courseId = c.req.param('id');
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const sections = await service.getCourseSections(courseId);
+  return c.json({ success: true, data: sections });
 });
 
 vocabRouter.get('/', async (c) => {
@@ -77,6 +86,7 @@ vocabRouter.get('/', async (c) => {
   const is_academic = c.req.query('is_academic');
   const limit = c.req.query('limit');
   const offset = c.req.query('offset');
+  const section = c.req.query('section');
 
   const service = new VocabularyService(c.env.DB, c.env.CACHE);
   const words = await service.getAll({
@@ -87,7 +97,8 @@ vocabRouter.get('/', async (c) => {
     is_priority: is_priority === 'true' ? true : is_priority === 'false' ? false : undefined,
     is_academic: is_academic === 'true' ? true : is_academic === 'false' ? false : undefined,
     limit: limit ? parseInt(limit) : undefined,
-    offset: offset ? parseInt(offset) : undefined
+    offset: offset ? parseInt(offset) : undefined,
+    section
   });
 
   return c.json({ success: true, data: words });

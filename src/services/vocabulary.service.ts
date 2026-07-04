@@ -25,7 +25,8 @@ export class VocabularyService {
     is_priority?: boolean;
     is_academic?: boolean;
     limit?: number; 
-    offset?: number 
+    offset?: number;
+    section?: string;
   } = {}) {
     const cacheKey = `vocab:${params.vocab_course_id || 'all'}:${params.level || 'all'}:${params.topic || 'all'}:${params.structure_type || 'all'}:${params.is_priority ?? 'all'}:${params.is_academic ?? 'all'}:${params.limit || 'all'}:${params.offset || 0}`;
     if (this.cache) {
@@ -37,6 +38,7 @@ export class VocabularyService {
         limit: params.limit,
         offset: params.offset,
         mode: 'full',
+        section: params.section,
       });
       if (this.cache) await this.cache.put(cacheKey, JSON.stringify(result), { expirationTtl: CACHE_TTL });
       return result;
@@ -108,14 +110,23 @@ export class VocabularyService {
     `).all().then((res) => res.results || []);
   }
 
-  async getCourseWords(courseId: string, options: { limit?: number; offset?: number; mode?: 'full' | 'ids' } = {}) {
+  async getCourseWords(courseId: string, options: { limit?: number; offset?: number; mode?: 'full' | 'ids'; section?: string } = {}) {
     const limit = Math.min(Math.max(Number(options.limit || 2000), 1), 5000);
     const offset = Math.max(Number(options.offset || 0), 0);
+    const sectionFilter = options.section ? options.section : null;
+
     const mappedCount = await this.d1.prepare(
       'SELECT COUNT(*) as count FROM vocab_course_words WHERE course_id = ? AND COALESCE(is_deleted, 0) = 0'
     ).bind(courseId).first<{ count: number }>();
 
     if ((mappedCount?.count || 0) > 0) {
+      const sectionQuery = sectionFilter 
+        ? "AND COALESCE(cw.section, 'Chung') = ?" 
+        : "";
+      const binds = sectionFilter 
+        ? [courseId, sectionFilter, limit, offset] 
+        : [courseId, limit, offset];
+
       if (options.mode === 'ids') {
         const result = await this.d1.prepare(`
           SELECT cw.vocab_id, v.word, cw.order_index, cw.section, cw.is_featured
@@ -125,9 +136,10 @@ export class VocabularyService {
             AND COALESCE(cw.is_deleted, 0) = 0
             AND v.status = 'published'
             AND v.is_deleted = 0
+            ${sectionQuery}
           ORDER BY cw.order_index ASC, v.word ASC
           LIMIT ? OFFSET ?
-        `).bind(courseId, limit, offset).all();
+        `).bind(...binds).all();
         return result.results || [];
       }
 
@@ -139,10 +151,17 @@ export class VocabularyService {
           AND COALESCE(cw.is_deleted, 0) = 0
           AND v.status = 'published'
           AND v.is_deleted = 0
+          ${sectionQuery}
         ORDER BY cw.order_index ASC, v.word ASC
         LIMIT ? OFFSET ?
-      `).bind(courseId, limit, offset).all();
+      `).bind(...binds).all();
       return result.results || [];
+    }
+
+    // For legacy/unmapped courses (words linked directly via vocabulary.vocab_course_id)
+    // Legacy words don't have a section column in vocabulary, so they all default to 'Chung'.
+    if (sectionFilter && sectionFilter !== 'Chung') {
+      return [];
     }
 
     if (options.mode === 'ids') {
@@ -170,6 +189,40 @@ export class VocabularyService {
     return result.results || [];
   }
 
+  async getCourseSections(courseId: string) {
+    const mappedCount = await this.d1.prepare(
+      'SELECT COUNT(*) as count FROM vocab_course_words WHERE course_id = ? AND COALESCE(is_deleted, 0) = 0'
+    ).bind(courseId).first<{ count: number }>();
+
+    if ((mappedCount?.count || 0) > 0) {
+      const result = await this.d1.prepare(`
+        SELECT 
+          COALESCE(section, 'Chung') as name,
+          COUNT(*) as word_count
+        FROM vocab_course_words cw
+        JOIN vocabulary v ON v.id = cw.vocab_id
+        WHERE cw.course_id = ? 
+          AND COALESCE(cw.is_deleted, 0) = 0 
+          AND v.status = 'published' 
+          AND v.is_deleted = 0
+        GROUP BY COALESCE(section, 'Chung')
+        ORDER BY MIN(cw.order_index) ASC, COALESCE(section, 'Chung') ASC
+      `).bind(courseId).all();
+      return result.results || [];
+    }
+
+    // Default for legacy/unmapped courses
+    const countRes = await this.d1.prepare(
+      "SELECT COUNT(*) as count FROM vocabulary WHERE vocab_course_id = ? AND status = 'published' AND is_deleted = 0"
+    ).bind(courseId).first<{ count: number }>();
+    
+    if ((countRes?.count || 0) > 0) {
+      return [{ name: 'Chung', word_count: countRes!.count }];
+    }
+
+    return [];
+  }
+
   async getAllCourseWordMappings(limit = 1000000) {
     const result = await this.d1.prepare(`
       SELECT course_id, vocab_id, order_index, section, is_featured, updated_at, is_deleted
@@ -181,7 +234,7 @@ export class VocabularyService {
     return result.results || [];
   }
 
-  async createCourse(data: { id?: string; title: string; slug: string; description?: string; thumbnail_url?: string }) {
+  async createCourse(data: { id?: string; title: string; slug: string; description?: string; thumbnail_url?: string; level?: string }) {
     const { id: _ignoredId, ...courseData } = data;
     const id = crypto.randomUUID();
     const now = Math.floor(Date.now() / 1000);
@@ -338,7 +391,7 @@ export class VocabularyService {
 
   async getCourseSyncDeltas(since: number, limit = 500, offset = 0) {
     const coursesRes = await this.d1.prepare(`
-      SELECT id, title, slug, description, thumbnail_url, status, created_at, updated_at, is_deleted
+      SELECT id, title, slug, description, thumbnail_url, level, status, created_at, updated_at, is_deleted
       FROM vocab_courses
       WHERE COALESCE(updated_at, 0) > ?
       ORDER BY updated_at ASC, id ASC

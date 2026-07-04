@@ -134,6 +134,7 @@ adminVocabRouter.get('/export-sql', async (c) => {
     '  slug TEXT NOT NULL UNIQUE,',
     '  description TEXT,',
     '  thumbnail_url TEXT,',
+    '  level TEXT,',
     "  status TEXT DEFAULT 'published',",
     '  created_at INTEGER,',
     '  updated_at INTEGER,',
@@ -189,10 +190,10 @@ adminVocabRouter.get('/export-sql', async (c) => {
       };
       // created_at is timestamp, fallback to 0 if null
       const created_at = c.created_at ? new Date(c.created_at).getTime() / 1000 : 0;
-      return `(${esc(c.id)},${esc(c.title)},${esc(c.slug)},${esc(c.description)},${esc(c.thumbnail_url)},${esc(c.status || 'published')},${created_at},${Number(c.updated_at || 0)},${c.is_deleted ? 1 : 0})`;
+      return `(${esc(c.id)},${esc(c.title)},${esc(c.slug)},${esc(c.description)},${esc(c.thumbnail_url)},${esc(c.level)},${esc(c.status || 'published')},${created_at},${Number(c.updated_at || 0)},${c.is_deleted ? 1 : 0})`;
     }).join(',\n  ');
     
-    lines.push(`INSERT OR IGNORE INTO vocab_courses (id,title,slug,description,thumbnail_url,status,created_at,updated_at,is_deleted) VALUES`);
+    lines.push(`INSERT OR IGNORE INTO vocab_courses (id,title,slug,description,thumbnail_url,level,status,created_at,updated_at,is_deleted) VALUES`);
     lines.push(`  ${courseValues};`);
     lines.push('');
   }

@@ -181,10 +181,11 @@ export class StreakService {
 
     // 4. Reset những user KHÔNG được bảo vệ
     if (toResetUsers.length > 0) {
-      const ids = toResetUsers.map(u => `'${u.id}'`).join(',');
-      await this.db.run(
-        sql`UPDATE users SET current_streak = 0 WHERE id IN (${sql.raw(ids)})`
-      );
+      const resetIds = toResetUsers.map(u => u.id);
+      await this.db.update(users)
+        .set({ current_streak: 0 })
+        .where(inArray(users.id, resetIds))
+        .run();
     }
 
     // 5. Tiêu thụ Streak Freeze cho những user được bảo vệ
