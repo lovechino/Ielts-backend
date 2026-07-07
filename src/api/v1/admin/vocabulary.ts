@@ -13,6 +13,68 @@ async function bumpDictionaryVersion(c: any) {
 
 adminVocabRouter.use('/*', adminGuard);
 
+adminVocabRouter.post('/paths/:id/lessons', async (c) => {
+  const courseId = c.req.param('id');
+  const body = await c.req.json();
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const lesson = await service.createLesson(courseId, body);
+  await bumpDictionaryVersion(c);
+  await writeAdminAuditLog(c, 'vocab_course.lesson_create', {
+    targetType: 'vocab_course_lesson', targetId: lesson.id,
+    metadata: { courseId, title: body.title },
+  });
+  return c.json({ success: true, data: lesson });
+});
+
+adminVocabRouter.get('/paths/:id/lessons', async (c) => {
+  const courseId = c.req.param('id');
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const lessons = await service.getLessons(courseId);
+  return c.json({ success: true, data: lessons });
+});
+
+adminVocabRouter.put('/paths/:id/lessons/:lessonId', async (c) => {
+  const lessonId = c.req.param('lessonId');
+  const body = await c.req.json();
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const result = await service.updateLesson(lessonId, body);
+  await bumpDictionaryVersion(c);
+  await writeAdminAuditLog(c, 'vocab_course.lesson_update', {
+    targetType: 'vocab_course_lesson', targetId: lessonId,
+    metadata: { fields: Object.keys(body) },
+  });
+  return c.json({ success: true, data: result });
+});
+
+adminVocabRouter.delete('/paths/:id/lessons/:lessonId', async (c) => {
+  const lessonId = c.req.param('lessonId');
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const result = await service.deleteLesson(lessonId);
+  await bumpDictionaryVersion(c);
+  await writeAdminAuditLog(c, 'vocab_course.lesson_delete', {
+    targetType: 'vocab_course_lesson', targetId: lessonId,
+  });
+  return c.json({ success: true, data: result });
+});
+
+adminVocabRouter.post('/paths/:id/lessons/:lessonId/words/import', async (c) => {
+  try {
+    const courseId = c.req.param('id');
+    const lessonId = c.req.param('lessonId');
+    const { words } = await c.req.json();
+    const service = new VocabularyService(c.env.DB, c.env.CACHE);
+    const result = await service.importWordsToLesson(courseId, lessonId, words);
+    await bumpDictionaryVersion(c);
+    await writeAdminAuditLog(c, 'vocab_course.lesson_words_import', {
+      targetType: 'vocab_course_lesson', targetId: lessonId,
+      metadata: { wordCount: Array.isArray(words) ? words.length : 0, mapped: result.mapped },
+    });
+    return c.json({ success: true, data: result });
+  } catch (error: any) {
+    return c.json({ success: false, error: { code: 'LESSON_WORD_IMPORT_FAILED', message: error?.message } }, 400);
+  }
+});
+
 adminVocabRouter.post('/paths', async (c) => {
   const body = await c.req.json();
   const service = new VocabularyService(c.env.DB, c.env.CACHE);
@@ -120,11 +182,21 @@ adminVocabRouter.get('/export-sql', async (c) => {
   const courses = await service.getCourses();
   const courseWordMappings = vocab_course_id ? [] : await service.getAllCourseWordMappings();
 
+  // Fetch all lessons for export
+  let allLessons: any[] = [];
+  if (!vocab_course_id) {
+    for (const course of courses as any[]) {
+      const lessons = await service.getLessons(course.id);
+      allLessons = allLessons.concat(lessons.map((l: any) => ({ ...l, course_id: course.id })));
+    }
+  }
+
   const lines: string[] = [
     '-- IELTS Dictionary Export',
     `-- Generated: ${new Date().toISOString()}`,
     `-- Total words: ${words.length}`,
     `-- Total courses: ${courses.length}`,
+    `-- Total lessons: ${allLessons.length}`,
     '',
     'BEGIN TRANSACTION;',
     '',
@@ -141,9 +213,21 @@ adminVocabRouter.get('/export-sql', async (c) => {
     '  is_deleted INTEGER DEFAULT 0',
     ');',
     '',
+    'CREATE TABLE IF NOT EXISTS vocab_course_lessons (',
+    '  id TEXT PRIMARY KEY,',
+    '  course_id TEXT NOT NULL,',
+    '  title TEXT NOT NULL,',
+    '  description TEXT,',
+    '  order_index INTEGER DEFAULT 0,',
+    "  created_at INTEGER DEFAULT (strftime('%s','now')),",
+    "  updated_at INTEGER DEFAULT (strftime('%s','now')),",
+    '  is_deleted INTEGER DEFAULT 0',
+    ');',
+    '',
     'CREATE TABLE IF NOT EXISTS vocab_course_words (',
     '  id TEXT PRIMARY KEY,',
     '  course_id TEXT NOT NULL,',
+    '  lesson_id TEXT,',
     '  vocab_id INTEGER NOT NULL,',
     '  order_index INTEGER DEFAULT 0,',
     '  section TEXT,',
@@ -188,14 +272,30 @@ adminVocabRouter.get('/export-sql', async (c) => {
         if (s == null) return 'NULL';
         return `'${String(s).replace(/'/g, "''")}'`;
       };
-      // created_at is timestamp, fallback to 0 if null
       const created_at = c.created_at ? new Date(c.created_at).getTime() / 1000 : 0;
       return `(${esc(c.id)},${esc(c.title)},${esc(c.slug)},${esc(c.description)},${esc(c.thumbnail_url)},${esc(c.level)},${esc(c.status || 'published')},${created_at},${Number(c.updated_at || 0)},${c.is_deleted ? 1 : 0})`;
     }).join(',\n  ');
-    
     lines.push(`INSERT OR IGNORE INTO vocab_courses (id,title,slug,description,thumbnail_url,level,status,created_at,updated_at,is_deleted) VALUES`);
     lines.push(`  ${courseValues};`);
     lines.push('');
+  }
+
+  // Insert lessons
+  if (allLessons.length > 0) {
+    const BATCH_L = 500;
+    for (let i = 0; i < allLessons.length; i += BATCH_L) {
+      const batch = allLessons.slice(i, i + BATCH_L);
+      const values = batch.map((l: any) => {
+        const esc = (s: string | number | null | undefined) => {
+          if (s == null) return 'NULL';
+          return `'${String(s).replace(/'/g, "''")}'`;
+        };
+        return `(${esc(l.id)},${esc(l.course_id)},${esc(l.title)},${esc(l.description)},${Number(l.order_index || 0)},${Number(l.updated_at || 0)},0)`;
+      }).join(',\n  ');
+      lines.push('INSERT OR IGNORE INTO vocab_course_lessons (id,course_id,title,description,order_index,updated_at,is_deleted) VALUES');
+      lines.push(`  ${values};`);
+      lines.push('');
+    }
   }
 
   if (courseWordMappings.length > 0) {
@@ -208,9 +308,9 @@ adminVocabRouter.get('/export-sql', async (c) => {
           if (typeof s === 'boolean') return s ? 1 : 0;
           return `'${String(s).replace(/'/g, "''")}'`;
         };
-        return `(${esc(crypto.randomUUID())},${esc(m.course_id)},${Number(m.vocab_id)},${Number(m.order_index || 0)},${esc(m.section)},${m.is_featured ? 1 : 0},${Number(m.updated_at || 0)},${m.is_deleted ? 1 : 0})`;
+        return `(${esc(crypto.randomUUID())},${esc(m.course_id)},${esc(null)},${Number(m.vocab_id)},${Number(m.order_index || 0)},${esc(m.section)},${m.is_featured ? 1 : 0},${Number(m.updated_at || 0)},${m.is_deleted ? 1 : 0})`;
       }).join(',\n  ');
-      lines.push('INSERT OR IGNORE INTO vocab_course_words (id,course_id,vocab_id,order_index,section,is_featured,updated_at,is_deleted) VALUES');
+      lines.push('INSERT OR IGNORE INTO vocab_course_words (id,course_id,lesson_id,vocab_id,order_index,section,is_featured,updated_at,is_deleted) VALUES');
       lines.push(`  ${values};`);
       lines.push('');
     }

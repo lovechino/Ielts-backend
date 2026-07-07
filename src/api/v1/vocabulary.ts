@@ -77,6 +77,13 @@ vocabRouter.get('/paths/:id/sections', async (c) => {
   return c.json({ success: true, data: sections });
 });
 
+vocabRouter.get('/paths/:id/lessons', async (c) => {
+  const courseId = c.req.param('id');
+  const service = new VocabularyService(c.env.DB, c.env.CACHE);
+  const lessons = await service.getLessons(courseId);
+  return c.json({ success: true, data: lessons });
+});
+
 vocabRouter.get('/', async (c) => {
   const level = c.req.query('level');
   const topic = c.req.query('topic');

@@ -1,5 +1,5 @@
 import { drizzle } from 'drizzle-orm/d1';
-import { dictionaryReleases, vocabulary, vocabCourses, vocabCourseWords } from '../db/schema';
+import { dictionaryReleases, vocabulary, vocabCourses, vocabCourseWords, vocabCourseLessons } from '../db/schema';
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import type { D1Database } from '@cloudflare/workers-types';
 import type { KVNamespace } from '@cloudflare/workers-types';
@@ -190,6 +190,29 @@ export class VocabularyService {
   }
 
   async getCourseSections(courseId: string) {
+    // Primary: read from vocab_course_lessons (new structured lessons)
+    try {
+      const lessonsCount = await this.d1.prepare(
+        'SELECT COUNT(*) as count FROM vocab_course_lessons WHERE course_id = ? AND is_deleted = 0'
+      ).bind(courseId).first<{ count: number }>();
+
+      if ((lessonsCount?.count || 0) > 0) {
+        const result = await this.d1.prepare(`
+          SELECT l.title as name, l.order_index,
+            COUNT(CASE WHEN cw.is_deleted = 0 THEN 1 END) as word_count
+          FROM vocab_course_lessons l
+          LEFT JOIN vocab_course_words cw ON cw.lesson_id = l.id
+          WHERE l.course_id = ? AND l.is_deleted = 0
+          GROUP BY l.id
+          ORDER BY l.order_index ASC, l.created_at ASC
+        `).bind(courseId).all();
+        return result.results || [];
+      }
+    } catch {
+      // Table may not exist yet; fall through to legacy section grouping
+    }
+
+    // Fallback: legacy section text grouping
     const mappedCount = await this.d1.prepare(
       'SELECT COUNT(*) as count FROM vocab_course_words WHERE course_id = ? AND COALESCE(is_deleted, 0) = 0'
     ).bind(courseId).first<{ count: number }>();
@@ -211,24 +234,26 @@ export class VocabularyService {
       return result.results || [];
     }
 
-    // Default for legacy/unmapped courses
+    // Legacy: words linked via vocabulary.vocab_course_id
     const countRes = await this.d1.prepare(
       "SELECT COUNT(*) as count FROM vocabulary WHERE vocab_course_id = ? AND status = 'published' AND is_deleted = 0"
     ).bind(courseId).first<{ count: number }>();
-    
     if ((countRes?.count || 0) > 0) {
       return [{ name: 'Chung', word_count: countRes!.count }];
     }
-
     return [];
   }
 
   async getAllCourseWordMappings(limit = 1000000) {
+    // Join with lessons to populate section = lesson title for backward compat
     const result = await this.d1.prepare(`
-      SELECT course_id, vocab_id, order_index, section, is_featured, updated_at, is_deleted
-      FROM vocab_course_words
-      WHERE COALESCE(is_deleted, 0) = 0
-      ORDER BY course_id ASC, order_index ASC, vocab_id ASC
+      SELECT cw.course_id, cw.vocab_id, cw.order_index,
+        COALESCE(l.title, cw.section) as section,
+        cw.is_featured, cw.updated_at, cw.is_deleted
+      FROM vocab_course_words cw
+      LEFT JOIN vocab_course_lessons l ON l.id = cw.lesson_id AND l.is_deleted = 0
+      WHERE COALESCE(cw.is_deleted, 0) = 0
+      ORDER BY cw.course_id ASC, cw.order_index ASC, cw.vocab_id ASC
       LIMIT ?
     `).bind(limit).all();
     return result.results || [];
@@ -249,20 +274,118 @@ export class VocabularyService {
   }
 
   async deleteCourse(id: string) {
+    if (!id) return { success: false };
+
     const now = Math.floor(Date.now() / 1000);
-    await this.d1.prepare('UPDATE vocab_course_words SET is_deleted = 1, updated_at = ? WHERE course_id = ?').bind(now, id).run();
-    await this.db.update(vocabCourses).set({ is_deleted: 1, updated_at: now, status: 'archived' }).where(eq(vocabCourses.id, id)).run();
+
+    await this.d1.batch([
+      this.d1.prepare('UPDATE vocab_course_words SET is_deleted = 1, updated_at = ? WHERE course_id = ?').bind(now, id),
+      this.d1.prepare('UPDATE vocab_course_lessons SET is_deleted = 1, updated_at = ? WHERE course_id = ?').bind(now, id),
+      this.d1.prepare('UPDATE vocabulary SET vocab_course_id = NULL, updated_at = ? WHERE vocab_course_id = ?').bind(now, id),
+      this.d1.prepare('UPDATE vocab_courses SET is_deleted = 1, updated_at = ? WHERE id = ?').bind(now, id),
+    ]);
+
+    if (this.cache) {
+      const cacheKeys = [
+        `vocab:${id}:all:all:all:all:all:all:0`,
+        `vocab:${id}:all:all:all:all:all:2000:0`,
+        `vocab:${id}:all:all:all:all:all:200000:0`,
+        `vocab:${id}:all:all:all:all:all:5000:0`,
+      ];
+      await Promise.all(cacheKeys.map((key) => this.cache!.delete(key)));
+    }
+
     return { success: true };
   }
 
-  async importWordsToCourse(courseId: string, items: any[]) {
+  // ── Vocab Course Lessons ────────────────────────────────────────────────────
+
+  async getLessons(courseId: string) {
+    const result = await this.d1.prepare(`
+      SELECT l.*,
+        COUNT(CASE WHEN cw.is_deleted = 0 THEN 1 END) as word_count
+      FROM vocab_course_lessons l
+      LEFT JOIN vocab_course_words cw ON cw.lesson_id = l.id
+      WHERE l.course_id = ? AND l.is_deleted = 0
+      GROUP BY l.id
+      ORDER BY l.order_index ASC, l.created_at ASC
+    `).bind(courseId).all();
+    return result.results || [];
+  }
+
+  async createLesson(courseId: string, data: { title: string; description?: string; order_index?: number }) {
+    const id = crypto.randomUUID();
+    const now = Math.floor(Date.now() / 1000);
+
+    // Auto-assign order_index if not provided
+    let orderIndex = data.order_index;
+    if (orderIndex === undefined || orderIndex === null) {
+      const row = await this.d1.prepare(
+        'SELECT COALESCE(MAX(order_index), -1) as max_order FROM vocab_course_lessons WHERE course_id = ? AND is_deleted = 0'
+      ).bind(courseId).first<{ max_order: number }>();
+      orderIndex = (row?.max_order ?? -1) + 1;
+    }
+
+    await this.d1.prepare(`
+      INSERT INTO vocab_course_lessons (id, course_id, title, description, order_index, created_at, updated_at, is_deleted)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+    `).bind(id, courseId, data.title, data.description ?? null, orderIndex, now, now).run();
+
+    // Bump course updated_at so mobile sync picks it up
+    await this.d1.prepare('UPDATE vocab_courses SET updated_at = ? WHERE id = ?').bind(now, courseId).run();
+
+    return { id, course_id: courseId, title: data.title, description: data.description ?? null, order_index: orderIndex, word_count: 0 };
+  }
+
+  async updateLesson(lessonId: string, data: { title?: string; description?: string; order_index?: number }) {
+    const now = Math.floor(Date.now() / 1000);
+    const sets: string[] = ['updated_at = ?'];
+    const binds: any[] = [now];
+    if (data.title !== undefined) { sets.push('title = ?'); binds.push(data.title); }
+    if (data.description !== undefined) { sets.push('description = ?'); binds.push(data.description); }
+    if (data.order_index !== undefined) { sets.push('order_index = ?'); binds.push(data.order_index); }
+    binds.push(lessonId);
+    await this.d1.prepare(`UPDATE vocab_course_lessons SET ${sets.join(', ')} WHERE id = ?`).bind(...binds).run();
+    return { success: true };
+  }
+
+  async deleteLesson(lessonId: string) {
+    const now = Math.floor(Date.now() / 1000);
+    // Soft-delete words in this lesson
+    await this.d1.prepare(
+      'UPDATE vocab_course_words SET is_deleted = 1, updated_at = ? WHERE lesson_id = ?'
+    ).bind(now, lessonId).run();
+    // Soft-delete lesson
+    await this.d1.prepare(
+      'UPDATE vocab_course_lessons SET is_deleted = 1, updated_at = ? WHERE id = ?'
+    ).bind(now, lessonId).run();
+    return { success: true };
+  }
+
+  async importWordsToLesson(courseId: string, lessonId: string, items: any[]) {
+    if (!lessonId) throw new Error('lessonId is required');
+    // Delegate to importWordsToCourse with lessonId
+    const result = await this.importWordsToCourse(courseId, items, lessonId);
+    return result;
+  }
+
+  async importWordsToCourse(courseId: string, items: any[], lessonId?: string) {
     if (!courseId) throw new Error('courseId is required');
     if (!Array.isArray(items)) throw new Error('words must be an array');
+
+    // Resolve section name from lesson title (backward compat for mobile)
+    let lessonTitle: string | null = null;
+    if (lessonId) {
+      const lesson = await this.d1.prepare(
+        'SELECT title FROM vocab_course_lessons WHERE id = ? AND is_deleted = 0'
+      ).bind(lessonId).first<{ title: string }>();
+      lessonTitle = lesson?.title ?? null;
+    }
 
     const normalized = items.map((item, index) => ({
       index,
       word: String(typeof item === 'string' ? item : item?.word || '').trim().toLowerCase(),
-      section: typeof item === 'object' ? item?.section || null : null,
+      section: lessonTitle ?? (typeof item === 'object' ? item?.section || null : null),
       is_featured: typeof item === 'object' && item?.is_featured ? 1 : 0,
     })).filter((item) => item.word);
 
@@ -294,15 +417,16 @@ export class VocabularyService {
         continue;
       }
       statements.push(this.d1.prepare(`
-        INSERT INTO vocab_course_words (id, course_id, vocab_id, order_index, section, is_featured, updated_at, is_deleted)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+        INSERT INTO vocab_course_words (id, course_id, lesson_id, vocab_id, order_index, section, is_featured, updated_at, is_deleted)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(course_id, vocab_id) DO UPDATE SET
+          lesson_id = excluded.lesson_id,
           order_index = excluded.order_index,
           section = excluded.section,
           is_featured = excluded.is_featured,
           updated_at = excluded.updated_at,
           is_deleted = 0
-      `).bind(crypto.randomUUID(), courseId, vocab.id, item.index, item.section, item.is_featured, Math.floor(Date.now() / 1000)));
+      `).bind(crypto.randomUUID(), courseId, lessonId ?? null, vocab.id, item.index, item.section, item.is_featured, Math.floor(Date.now() / 1000)));
     }
 
     if (statements.length > 0) {
@@ -398,8 +522,16 @@ export class VocabularyService {
       LIMIT ? OFFSET ?
     `).bind(since, limit, offset).all();
 
+    const lessonsRes = await this.d1.prepare(`
+      SELECT id, course_id, title, description, order_index, created_at, updated_at, is_deleted
+      FROM vocab_course_lessons
+      WHERE COALESCE(updated_at, 0) > ?
+      ORDER BY updated_at ASC, course_id ASC, order_index ASC
+      LIMIT ? OFFSET ?
+    `).bind(since, limit, offset).all();
+
     const mappingsRes = await this.d1.prepare(`
-      SELECT cw.id, cw.course_id, cw.vocab_id, v.word, cw.order_index, cw.section, cw.is_featured, cw.updated_at, cw.is_deleted
+      SELECT cw.id, cw.course_id, cw.lesson_id, cw.vocab_id, v.word, cw.order_index, cw.section, cw.is_featured, cw.updated_at, cw.is_deleted
       FROM vocab_course_words cw
       LEFT JOIN vocabulary v ON v.id = cw.vocab_id
       WHERE COALESCE(cw.updated_at, 0) > ?
@@ -409,6 +541,7 @@ export class VocabularyService {
 
     return {
       courses: coursesRes.results || [],
+      lessons: lessonsRes.results || [],
       course_words: mappingsRes.results || [],
     };
   }

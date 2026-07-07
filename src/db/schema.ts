@@ -239,9 +239,24 @@ export const vocabulary = sqliteTable('vocabulary', {
   vocabSyncIdx: index('idx_vocab_sync').on(table.status, table.updated_at),
 }));
 
+export const vocabCourseLessons = sqliteTable('vocab_course_lessons', {
+  id: uuid('id'),
+  course_id: text('course_id').notNull().references(() => vocabCourses.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  description: text('description'),
+  order_index: integer('order_index').notNull().default(0),
+  created_at: integer('created_at').default(sql`(strftime('%s', 'now'))`),
+  updated_at: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
+  is_deleted: integer('is_deleted').notNull().default(0),
+}, (table) => ({
+  courseIdx: index('idx_vocab_course_lessons_course').on(table.course_id, table.order_index),
+  syncIdx: index('idx_vocab_course_lessons_sync').on(table.updated_at, table.is_deleted),
+}));
+
 export const vocabCourseWords = sqliteTable('vocab_course_words', {
   id: uuid('id'),
   course_id: text('course_id').notNull().references(() => vocabCourses.id, { onDelete: 'cascade' }),
+  lesson_id: text('lesson_id').references(() => vocabCourseLessons.id, { onDelete: 'set null' }),
   vocab_id: integer('vocab_id').notNull().references(() => vocabulary.id, { onDelete: 'cascade' }),
   order_index: integer('order_index').notNull().default(0),
   section: text('section'),
