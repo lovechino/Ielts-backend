@@ -144,7 +144,7 @@ export class VocabularyService {
       }
 
       const result = await this.d1.prepare(`
-        SELECT v.*, cw.order_index, cw.section, cw.is_featured
+        SELECT v.*, cw.order_index, cw.lesson_id, cw.section, cw.is_featured
         FROM vocab_course_words cw
         JOIN vocabulary v ON v.id = cw.vocab_id
         WHERE cw.course_id = ?
